@@ -1,4 +1,4 @@
-import { all, batch, get, run, scalar } from "../db";
+import { all, batch, scalar } from "../db";
 import { hashPassword } from "../auth";
 import { CATALOG, CATEGORIES, INSPIRATION } from "./catalog";
 import { POOL } from "../images";
@@ -144,6 +144,20 @@ export async function isSeeded(): Promise<boolean> {
 }
 
 /**
+ * Runs statements in chunks. A few thousand single inserts over a remote HTTP
+ * database is hundreds of round trips; batching them ~200 to a request keeps
+ * the seed fast and resilient enough to survive one flaky connection.
+ */
+async function runBatch(statements: { sql: string; args?: unknown[] }[]): Promise<{ changes: number; lastInsertRowid: number }[]> {
+  const results: { changes: number; lastInsertRowid: number }[] = [];
+  for (let i = 0; i < statements.length; i += 200) {
+    const chunk = statements.slice(i, i + 200);
+    if (chunk.length > 0) results.push(...(await batch(chunk)));
+  }
+  return results;
+}
+
+/**
  * Populates an empty database. Safe to call on every boot — it no-ops when
  * products already exist unless `force` is set.
  */
@@ -152,96 +166,106 @@ export async function seed(force = false): Promise<SeedResult> {
     return { categories: 0, products: 0, variants: 0, reviews: 0, users: 0, orders: 0, inspiration: 0, discounts: 0 };
   }
 
-  // Sequential rather than one big batch: this writes a few thousand rows, and
-  // a single batch that large risks hitting a request-size limit against a
-  // remote database. Each await is one round trip, which is fine for a one-time
-  // setup step.
-  {
-    if (force) await truncateAll();
+  if (force) await truncateAll();
 
-    const result: SeedResult = {
-      categories: 0, products: 0, variants: 0, reviews: 0,
-      users: 0, orders: 0, inspiration: 0, discounts: 0,
-    };
+  const result: SeedResult = {
+    categories: 0, products: 0, variants: 0, reviews: 0,
+    users: 0, orders: 0, inspiration: 0, discounts: 0,
+  };
 
-    /* ---- Categories ---- */
-    for (const [i, c] of CATEGORIES.entries()) {
-      await run(
-        `INSERT INTO categories (slug, name, tagline, description, image, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        c.slug, c.name, c.tagline, c.description, c.image, i + 1,
-      );
-      result.categories += 1;
-    }
+  /* ---- Categories ---- */
+  await runBatch(
+    CATEGORIES.map((c, i) => ({
+      sql: `INSERT INTO categories (slug, name, tagline, description, image, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [c.slug, c.name, c.tagline, c.description, c.image, i + 1],
+    })),
+  );
+  result.categories = CATEGORIES.length;
 
-    /* ---- Products + variants ---- */
-    for (const product of CATALOG) {
-      const images = galleryFor(product, 3);
-      await run(
-        `INSERT INTO products
+  /* ---- Products + variants ---- */
+  const productIds = (
+    await runBatch(
+      CATALOG.map((product) => ({
+        sql: `INSERT INTO products
           (slug, name, subtitle, description, category_slug, gender, price, compare_at,
            images, colors, sizes, materials, care, details, tags,
            is_new, is_featured, is_best_seller, status, popularity, created_at, rating, review_count)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, 0)`,
-        product.slug, product.name, product.subtitle, product.description,
-        product.category, product.gender, product.price, product.compareAt,
-        JSON.stringify(images),
-        JSON.stringify(product.colors),
-        JSON.stringify(product.sizes),
-        product.materials, product.care,
-        JSON.stringify(product.details),
-        JSON.stringify(product.tags),
-        product.isNew ? 1 : 0,
-        product.isFeatured ? 1 : 0,
-        product.isBestSeller ? 1 : 0,
-        product.popularity,
-        createdAt(product.daysAgo),
-      );
-      result.products += 1;
+        args: [
+          product.slug, product.name, product.subtitle, product.description,
+          product.category, product.gender, product.price, product.compareAt,
+          JSON.stringify(galleryFor(product, 3)),
+          JSON.stringify(product.colors),
+          JSON.stringify(product.sizes),
+          product.materials, product.care,
+          JSON.stringify(product.details),
+          JSON.stringify(product.tags),
+          product.isNew ? 1 : 0,
+          product.isFeatured ? 1 : 0,
+          product.isBestSeller ? 1 : 0,
+          product.popularity,
+          createdAt(product.daysAgo),
+        ],
+      })),
+    )
+  ).map((r) => r.lastInsertRowid);
 
-      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
+  result.products = productIds.length;
 
-      // SKU is derived from the product id, not the slug — slug prefixes are
-      // not unique once punctuation is stripped, which silently collided.
-      const code = `MA${String(productId).padStart(4, "0")}`;
-      for (const [colorIndex, color] of product.colors.entries()) {
-        for (const size of product.sizes) {
-          // Guard against a shoe scale (36–43) attached to a jewellery item.
-          // Ring sizes are also numeric but sit above 45, so the band matters.
-          if (product.category === "jewelry" && /^\d{2}$/.test(size)) {
-            const n = Number(size);
-            if (n >= 35 && n <= 45) continue;
-          }
-          const stock = rand() < 0.08 ? 0 : between(1, 40);
-          await run(
-            "INSERT INTO variants (product_id, sku, color, size, stock) VALUES (?, ?, ?, ?, ?)",
+  const productIdBySlug = new Map(CATALOG.map((p, i) => [p.slug, productIds[i]!]));
+
+  const variantStmts: { sql: string; args: unknown[] }[] = [];
+  for (const [index, product] of CATALOG.entries()) {
+    const productId = productIds[index]!;
+
+    // SKU is derived from the product id, not the slug — slug prefixes are
+    // not unique once punctuation is stripped, which silently collided.
+    const code = `MA${String(productId).padStart(4, "0")}`;
+    for (const [colorIndex, color] of product.colors.entries()) {
+      for (const size of product.sizes) {
+        // Guard against a shoe scale (36–43) attached to a jewellery item.
+        // Ring sizes are also numeric but sit above 45, so the band matters.
+        if (product.category === "jewelry" && /^\d{2}$/.test(size)) {
+          const n = Number(size);
+          if (n >= 35 && n <= 45) continue;
+        }
+        const stock = rand() < 0.08 ? 0 : between(1, 40);
+        variantStmts.push({
+          sql: "INSERT INTO variants (product_id, sku, color, size, stock) VALUES (?, ?, ?, ?, ?)",
+          args: [
             productId,
             `${code}-${String(colorIndex + 1).padStart(2, "0")}-${size}`,
             color.name,
             size,
             stock,
-          );
-          result.variants += 1;
-        }
+          ],
+        });
+        result.variants += 1;
       }
     }
+  }
+  await runBatch(variantStmts);
 
-    /* ---- Reviews + recalculated ratings ---- */
-    for (const product of CATALOG) {
-      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
-      // A higher-popularity product has been around longer and has more reviews.
-      const count = product.isBestSeller ? between(6, 11) : between(2, 6);
+  /* ---- Reviews + recalculated ratings ---- */
+  const reviewStmts: { sql: string; args: unknown[] }[] = [];
+  const ratingStmts: { sql: string; args: unknown[] }[] = [];
+  for (const [index, product] of CATALOG.entries()) {
+    const productId = productIds[index]!;
+    // A higher-popularity product has been around longer and has more reviews.
+    const count = product.isBestSeller ? between(6, 11) : between(2, 6);
 
-      for (let i = 0; i < count; i += 1) {
-        const roll = rand();
-        const rating = roll < 0.68 ? 5 : roll < 0.9 ? 4 : 3;
-        const lines = REVIEW_LINES[rating]!;
-        const line = pick(lines);
-        const hasImage = rating === 5 && rand() < 0.28;
+    for (let i = 0; i < count; i += 1) {
+      const roll = rand();
+      const rating = roll < 0.68 ? 5 : roll < 0.9 ? 4 : 3;
+      const lines = REVIEW_LINES[rating]!;
+      const line = pick(lines);
+      const hasImage = rating === 5 && rand() < 0.28;
 
-        await run(
-          `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, 1, 'approved', ?)`,
+      reviewStmts.push({
+        sql: `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
+              VALUES (?, NULL, ?, ?, ?, ?, ?, 1, 'approved', ?)`,
+        args: [
           productId,
           pick(REVIEW_AUTHORS),
           rating,
@@ -249,27 +273,31 @@ export async function seed(force = false): Promise<SeedResult> {
           line.body,
           hasImage ? pick(REVIEW_IMAGES) : null,
           createdAt(product.daysAgo + between(1, 60)),
-        );
-        result.reviews += 1;
-      }
-
-      await run(
-        `UPDATE products SET
-           rating = COALESCE((SELECT ROUND(AVG(rating), 1) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
-           review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
-         WHERE id = ?`,
-        productId, productId, productId,
-      );
+        ],
+      });
+      result.reviews += 1;
     }
 
-    /* ---- A few unapproved reviews for the admin queue ---- */
-    for (let i = 0; i < 4; i += 1) {
-      const product = pick(CATALOG);
-      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
-      await run(
-        `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
-         VALUES (?, NULL, ?, 5, ?, ?, NULL, 0, 'pending', ?)`,
-        productId,
+    ratingStmts.push({
+      sql: `UPDATE products SET
+             rating = COALESCE((SELECT ROUND(AVG(rating), 1) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
+             review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
+           WHERE id = ?`,
+      args: [productId, productId, productId],
+    });
+  }
+  await runBatch(reviewStmts);
+  await runBatch(ratingStmts);
+
+  /* ---- A few unapproved reviews for the admin queue ---- */
+  const pendingStmts: { sql: string; args: unknown[] }[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    const product = pick(CATALOG);
+    pendingStmts.push({
+      sql: `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
+            VALUES (?, NULL, ?, 5, ?, ?, NULL, 0, 'pending', ?)`,
+      args: [
+        productIdBySlug.get(product.slug)!,
         pick(REVIEW_AUTHORS),
         pick(["Worth writing home about", "Exactly as described", "Would buy again", "Beautiful piece"]),
         pick([
@@ -278,86 +306,92 @@ export async function seed(force = false): Promise<SeedResult> {
           "Excellent finish — you can tell it was made properly.",
         ]),
         createdAt(between(1, 8)),
-      );
-      result.reviews += 1;
+      ],
+    });
+    result.reviews += 1;
+  }
+  await runBatch(pendingStmts);
+
+  /* ---- Users ---- */
+  const users = [
+    { email: "owner@wearnow.com", first: "Alex", last: "Renaud", role: "admin", password: "wearnow2026" },
+    { email: "demo@wearnow.com", first: "Jordan", last: "Blake", role: "customer", password: "demo1234" },
+    { email: "imogen.hart@example.com", first: "Imogen", last: "Hart", role: "customer", password: "demo1234" },
+    { email: "desmond.ade@example.com", first: "Desmond", last: "Ade", role: "customer", password: "demo1234" },
+  ] as const;
+
+  const userIds = (
+    await runBatch(
+      users.map((u) => ({
+        sql: `INSERT INTO users (email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?)`,
+        args: [u.email, hashPassword(u.password), u.first, u.last, u.role],
+      })),
+    )
+  ).map((r) => r.lastInsertRowid);
+  result.users = userIds.length;
+
+  // Seeded customer data for the account pages.
+  const addresses = [
+    { label: "Home", line1: "48 Mercer Street", line2: "Apt 4B", city: "New York", region: "NY", postal: "10013", phone: "+1 212 555 0184", isDefault: 1 },
+    { label: "Studio", line1: "1120 Abbot Kinney Blvd", line2: null, city: "Venice", region: "CA", postal: "90291", phone: "+1 310 555 0119", isDefault: 0 },
+  ];
+  await runBatch(
+    addresses.map((a) => ({
+      sql: `INSERT INTO addresses (user_id, label, first_name, last_name, line1, line2, city, region, postal_code, country, phone, is_default)
+            VALUES (?, ?, 'Jordan', 'Blake', ?, ?, ?, ?, ?, 'United States', ?, ?)`,
+      args: [userIds[1]!, a.label, a.line1, a.line2, a.city, a.region, a.postal, a.phone, a.isDefault],
+    })),
+  );
+
+  /* ---- Historical orders for the demo customer ---- */
+  const demoId = userIds[1]!;
+  const productRows = await all<{
+    id: number;
+    slug: string;
+    name: string;
+    subtitle: string;
+    images: string;
+    price: number;
+  }>("SELECT id, slug, name, subtitle, images, price FROM products WHERE status = 'active'");
+
+  const statuses = ["delivered", "delivered", "shipped", "processing", "delivered"] as const;
+
+  const orderStmts: { sql: string; args: unknown[] }[] = [];
+  const orderLines: { orderId: number; lines: { productId: number; slug: string; name: string; subtitle: string; image: string; price: number; quantity: number }[] }[] = [];
+
+  for (const [index, status] of statuses.entries()) {
+    const lineCount = between(1, 3);
+    const lines: { productId: number; slug: string; name: string; subtitle: string; image: string; price: number; quantity: number }[] = [];
+    for (let i = 0; i < lineCount; i += 1) {
+      const p = pick(productRows);
+      if (lines.some((l) => l.productId === p.id)) continue;
+      lines.push({
+        productId: p.id,
+        slug: p.slug,
+        name: p.name,
+        subtitle: p.subtitle,
+        image: (JSON.parse(p.images) as string[])[0] ?? "",
+        price: p.price,
+        quantity: between(1, 2),
+      });
     }
+    if (lines.length === 0) continue;
 
-    /* ---- Users ---- */
-    const users = [
-      { email: "owner@wearnow.com", first: "Alex", last: "Renaud", role: "admin", password: "wearnow2026" },
-      { email: "demo@wearnow.com", first: "Jordan", last: "Blake", role: "customer", password: "demo1234" },
-      { email: "imogen.hart@example.com", first: "Imogen", last: "Hart", role: "customer", password: "demo1234" },
-      { email: "desmond.ade@example.com", first: "Desmond", last: "Ade", role: "customer", password: "demo1234" },
-    ] as const;
+    const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
+    const shipping = subtotal >= STORE.freeShippingThreshold ? 0 : 1200;
+    const tax = Math.round(subtotal * STORE.taxRate);
+    const total = subtotal + shipping + tax;
+    const created = createdAt(between(3, 90));
+    const orderNumber = `MA-${(900000 + index * 7919).toString(36).toUpperCase()}${rand().toString(36).slice(2, 5).toUpperCase()}`;
+    const address = addresses[0]!;
+    const carrier = pick(CARRIERS);
 
-    const userIds: number[] = [];
-    for (const u of users) {
-      const { lastInsertRowid } = await run(
-        `INSERT INTO users (email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?)`,
-        u.email, hashPassword(u.password), u.first, u.last, u.role,
-      );
-      userIds.push(lastInsertRowid);
-      result.users += 1;
-    }
-
-    // Seeded customer data for the account pages.
-    const addresses = [
-      { label: "Home", line1: "48 Mercer Street", line2: "Apt 4B", city: "New York", region: "NY", postal: "10013", phone: "+1 212 555 0184", isDefault: 1 },
-      { label: "Studio", line1: "1120 Abbot Kinney Blvd", line2: null, city: "Venice", region: "CA", postal: "90291", phone: "+1 310 555 0119", isDefault: 0 },
-    ];
-    for (const a of addresses) {
-      await run(
-        `INSERT INTO addresses (user_id, label, first_name, last_name, line1, line2, city, region, postal_code, country, phone, is_default)
-         VALUES (?, ?, 'Jordan', 'Blake', ?, ?, ?, ?, ?, 'United States', ?, ?)`,
-        userIds[1], a.label, a.line1, a.line2, a.city, a.region, a.postal, a.phone, a.isDefault,
-      );
-    }
-
-    /* ---- Historical orders for the demo customer ---- */
-    const demoId = userIds[1]!;
-    const productRows = await all<{
-      id: number;
-      slug: string;
-      name: string;
-      subtitle: string;
-      images: string;
-      price: number;
-    }>("SELECT id, slug, name, subtitle, images, price FROM products WHERE status = 'active'");
-
-    const statuses = ["delivered", "delivered", "shipped", "processing", "delivered"] as const;
-
-    for (const [index, status] of statuses.entries()) {
-      const lineCount = between(1, 3);
-      const lines: { productId: number; slug: string; name: string; subtitle: string; image: string; price: number; quantity: number }[] = [];
-      for (let i = 0; i < lineCount; i += 1) {
-        const p = pick(productRows);
-        if (lines.some((l) => l.productId === p.id)) continue;
-        lines.push({
-          productId: p.id,
-          slug: p.slug,
-          name: p.name,
-          subtitle: p.subtitle,
-          image: (JSON.parse(p.images) as string[])[0] ?? "",
-          price: p.price,
-          quantity: between(1, 2),
-        });
-      }
-      if (lines.length === 0) continue;
-
-      const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
-      const shipping = subtotal >= STORE.freeShippingThreshold ? 0 : 1200;
-      const tax = Math.round(subtotal * STORE.taxRate);
-      const total = subtotal + shipping + tax;
-      const created = createdAt(between(3, 90));
-      const orderNumber = `MA-${(900000 + index * 7919).toString(36).toUpperCase()}${rand().toString(36).slice(2, 5).toUpperCase()}`;
-      const address = addresses[0]!;
-      const carrier = pick(CARRIERS);
-
-      const { lastInsertRowid: orderId } = await run(
-        `INSERT INTO orders
-          (order_number, user_id, email, first_name, last_name, status, subtotal, discount, shipping, tax, total,
-           shipping_method, payment_last4, carrier, tracking_number, address_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'Jordan', 'Blake', ?, ?, 0, ?, ?, ?, 'standard', '4242', ?, ?, ?, ?, ?)`,
+    orderStmts.push({
+      sql: `INSERT INTO orders
+        (order_number, user_id, email, first_name, last_name, status, subtotal, discount, shipping, tax, total,
+         shipping_method, payment_last4, carrier, tracking_number, address_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'Jordan', 'Blake', ?, ?, 0, ?, ?, ?, 'standard', '4242', ?, ?, ?, ?, ?)`,
+      args: [
         orderNumber, demoId, "demo@wearnow.com", status, subtotal, shipping, tax, total,
         status === "processing" ? null : carrier.name,
         status === "processing" ? null : `${carrier.prefix}${between(100000000, 999999999)}`,
@@ -368,66 +402,79 @@ export async function seed(force = false): Promise<SeedResult> {
           country: "United States", phone: address.phone,
         }),
         created, created,
-      );
+      ],
+    });
+    orderLines.push({ orderId: 0, lines });
+    result.orders += 1;
+  }
 
-      for (const line of lines) {
-        await run(
-          `INSERT INTO order_items (order_id, product_id, product_slug, name, subtitle, image, color, size, price, quantity)
-           VALUES (?, ?, ?, ?, ?, ?, 'Default', 'M', ?, ?)`,
-          orderId, line.productId, line.slug, line.name, line.subtitle, line.image, line.price, line.quantity,
-        );
-      }
-      result.orders += 1;
+  const orderIds = (await runBatch(orderStmts)).map((r) => r.lastInsertRowid);
+  const itemStmts: { sql: string; args: unknown[] }[] = [];
+  for (const [orderIndex, { lines }] of orderLines.entries()) {
+    const orderId = orderIds[orderIndex]!;
+    for (const line of lines) {
+      itemStmts.push({
+        sql: `INSERT INTO order_items (order_id, product_id, product_slug, name, subtitle, image, color, size, price, quantity)
+              VALUES (?, ?, ?, ?, ?, ?, 'Default', 'M', ?, ?)`,
+        args: [orderId, line.productId, line.slug, line.name, line.subtitle, line.image, line.price, line.quantity],
+      });
     }
+  }
+  await runBatch(itemStmts);
 
-    // Wishlist seed for the demo account.
-    for (const row of productRows.filter(() => rand() < 0.12).slice(0, 4)) {
-      await run(
-        "INSERT OR IGNORE INTO wishlist_items (user_id, product_id, created_at) VALUES (?, ?, ?)",
-        demoId, row.id, createdAt(between(1, 20)),
-      );
-    }
+  // Wishlist seed for the demo account.
+  await runBatch(
+    productRows.filter(() => rand() < 0.12).slice(0, 4).map((row) => ({
+      sql: "INSERT OR IGNORE INTO wishlist_items (user_id, product_id, created_at) VALUES (?, ?, ?)",
+      args: [demoId, row.id, createdAt(between(1, 20))],
+    })),
+  );
 
-    /* ---- Discounts ---- */
-    const discounts = [
-      { code: "WELCOME10", description: "10% off your first order", type: "percent", value: 10, min: 5000, max: 5000, days: 365 },
-      { code: "ATELIER20", description: "20% off orders over $300", type: "percent", value: 20, min: 30000, max: 15000, days: 90 },
-    { code: "WEARNOW10", description: "10% off orders over $150", type: "percent", value: 10, min: 15000, max: 8000, days: 365 },
-      { code: "FREESHIP", description: "Free express shipping, any order", type: "free_shipping", value: 0, min: 0, max: null, days: 180 },
-      { code: "TAKE25", description: "$25 off orders over $200", type: "fixed", value: 2500, min: 20000, max: null, days: 60 },
-    ] as const;
+  /* ---- Discounts ---- */
+  const discounts = [
+    { code: "WELCOME10", description: "10% off your first order", type: "percent", value: 10, min: 5000, max: 5000, days: 365 },
+    { code: "ATELIER20", description: "20% off orders over $300", type: "percent", value: 20, min: 30000, max: 15000, days: 90 },
+  { code: "WEARNOW10", description: "10% off orders over $150", type: "percent", value: 10, min: 15000, max: 8000, days: 365 },
+    { code: "FREESHIP", description: "Free express shipping, any order", type: "free_shipping", value: 0, min: 0, max: null, days: 180 },
+    { code: "TAKE25", description: "$25 off orders over $200", type: "fixed", value: 2500, min: 20000, max: null, days: 60 },
+  ] as const;
 
-    for (const d of discounts) {
+  await runBatch(
+    discounts.map((d) => {
       const expires = new Date(Date.now() + d.days * 86_400_000).toISOString().slice(0, 19).replace("T", " ");
-      await run(
-        `INSERT INTO discounts (code, description, type, value, min_subtotal, max_discount, active, starts_at, ends_at, usage_limit)
-         VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, 500)`,
-        d.code, d.description, d.type, d.value, d.min, d.max, expires,
-      );
-      result.discounts += 1;
-    }
+      return {
+        sql: `INSERT INTO discounts (code, description, type, value, min_subtotal, max_discount, active, starts_at, ends_at, usage_limit)
+              VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, 500)`,
+        args: [d.code, d.description, d.type, d.value, d.min, d.max, expires],
+      };
+    }),
+  );
+  result.discounts = discounts.length;
 
-    /* ---- Inspiration board ---- */
-    for (const [i, post] of INSPIRATION.entries()) {
+  /* ---- Inspiration board ---- */
+  await runBatch(
+    INSPIRATION.map((post, i) => {
       const pool = POOL[post.pool];
       const start = hash(post.slug) % pool.length;
       const image = pool[(start + 2) % pool.length]!;
-      await run(
-        `INSERT INTO inspiration_posts (slug, title, category, image, aspect, product_slugs, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        post.slug, post.title, post.category, image, post.aspect,
-        JSON.stringify(post.productSlugs), i + 1,
-      );
-      result.inspiration += 1;
-    }
+      return {
+        sql: `INSERT INTO inspiration_posts (slug, title, category, image, aspect, product_slugs, sort_order)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [post.slug, post.title, post.category, image, post.aspect, JSON.stringify(post.productSlugs), i + 1],
+      };
+    }),
+  );
+  result.inspiration = INSPIRATION.length;
 
-    /* ---- Newsletter ---- */
-    for (const email of ["imogen.hart@example.com", "desmond.ade@example.com"]) {
-      await run("INSERT OR IGNORE INTO newsletter_subscribers (email) VALUES (?)", email);
-    }
+  /* ---- Newsletter ---- */
+  await runBatch(
+    ["imogen.hart@example.com", "desmond.ade@example.com"].map((email) => ({
+      sql: "INSERT OR IGNORE INTO newsletter_subscribers (email) VALUES (?)",
+      args: [email],
+    })),
+  );
 
-    return result;
-  }
+  return result;
 }
 
 /** Validates that the seeded content is internally consistent. */

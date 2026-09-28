@@ -40,9 +40,9 @@ import {
 
 let failures = 0;
 
-function check(label: string, fn: () => unknown) {
+async function check(label: string, fn: () => unknown) {
   try {
-    const result = fn();
+    const result = await fn();
     const detail =
       result === null
         ? "null"
@@ -56,7 +56,7 @@ function check(label: string, fn: () => unknown) {
   }
 }
 
-const demo = get<{ id: number; email: string }>(
+const demo = await get<{ id: number; email: string }>(
   "SELECT id, email FROM users WHERE email = ?",
   "demo@wearnow.com",
 );
@@ -67,110 +67,117 @@ if (!demo) {
 }
 
 console.log(`\nCatalog (guest-facing)`);
-const first = get<{ slug: string }>("SELECT slug FROM products WHERE status='active' LIMIT 1")!;
-check("listCategories", () => listCategories());
-check("queryProducts", () => queryProducts({ perPage: 12 }));
-check("queryProducts filtered", () =>
+const first = (await get<{ slug: string }>("SELECT slug FROM products WHERE status='active' LIMIT 1"))!;
+await check("listCategories", () => listCategories());
+await check("queryProducts", () => queryProducts({ perPage: 12 }));
+await check("queryProducts filtered", () =>
   queryProducts({ category: ["women"], sort: "price-asc", perPage: 8 }),
 );
-check("queryProducts search", () => queryProducts({ q: "linen", perPage: 8 }));
-check("queryProducts facets exclude own dimension", () => {
-  const r = queryProducts({ category: ["women"], colors: ["Black"], perPage: 8 });
+await check("queryProducts search", () => queryProducts({ q: "linen", perPage: 8 }));
+await check("queryProducts facets exclude own dimension", async () => {
+  const r = await queryProducts({ category: ["women"], colors: ["Black"], perPage: 8 });
   return r.facets.categories.length;
 });
-check("queryProducts pagination clamps", () => queryProducts({ perPage: 8, page: 999 }).page);
-check("getNewArrivals", () => getNewArrivals(12));
-check("getBestSellers", () => getBestSellers(4));
-const product = getProductBySlug(first.slug)!;
-check("getProductBySlug", () => product && product.name);
-check("getRelatedProducts", () => getRelatedProducts(product, 4));
-check("getReviewsForProduct", () => getReviewsForProduct(product.id));
-check("ratingBreakdown", () => ratingBreakdown(product.id));
+await check("queryProducts pagination clamps", async () =>
+  (await queryProducts({ perPage: 8, page: 999 })).page,
+);
+await check("getNewArrivals", () => getNewArrivals(12));
+await check("getBestSellers", () => getBestSellers(4));
+const product = (await getProductBySlug(first.slug))!;
+await check("getProductBySlug", () => product && product.name);
+await check("getRelatedProducts", () => getRelatedProducts(product, 4));
+await check("getReviewsForProduct", () => getReviewsForProduct(product.id));
+await check("ratingBreakdown", () => ratingBreakdown(product.id));
 
 console.log(`\nAccount ${demo.email} (id ${demo.id})`);
-check("listOrdersForUser", () => listOrdersForUser(demo.id));
-check("getOrderForUser", () => {
-  const order = listOrdersForUser(demo.id)[0];
+await check("listOrdersForUser", () => listOrdersForUser(demo.id));
+await check("getOrderForUser", async () => {
+  const orders = await listOrdersForUser(demo.id);
+  const order = orders[0];
   return order ? getOrderForUser(order.orderNumber, demo.id) : null;
 });
-check("getWishlist", () => getWishlist(demo.id));
-check("listAddresses", () => listAddresses(demo.id));
-check("getCart", () => getCart(demo.id));
+await check("getWishlist", () => getWishlist(demo.id));
+await check("listAddresses", () => listAddresses(demo.id));
+await check("getCart", () => getCart(demo.id));
 
 console.log(`\nCart mutations`);
-const variant = get<{ id: number; stock: number }>(
+const variant = (await get<{ id: number; stock: number }>(
   "SELECT id, stock FROM variants WHERE stock > 5 LIMIT 1",
-)!;
-check("addToCart", () => addToCart(demo.id, variant.id, 2));
-const cart = getCart(demo.id);
-check("getCart after add", () => cart.length);
-check("calculateTotals", () => calculateTotals(cart, { shippingMethod: "express" }));
-check("calculateTotals + code", () => calculateTotals(cart, { discountCode: "WEARNOW10" }));
+))!;
+await check("addToCart", () => addToCart(demo.id, variant.id, 2));
+const cart = await getCart(demo.id);
+await check("getCart after add", () => cart.length);
+await check("calculateTotals", () => calculateTotals(cart, { shippingMethod: "express" }));
+await check("calculateTotals + code", () => calculateTotals(cart, { discountCode: "WEARNOW10" }));
 const cartLine = cart[0];
 if (cartLine) {
-  check("updateCartQuantity", () => updateCartQuantity(demo.id, cartLine.id, 3));
-  check("getCart reflects qty", () => getCart(demo.id)[0]?.quantity);
-  check("removeCartLine", () => removeCartLine(demo.id, cartLine.id));
+  await check("updateCartQuantity", () => updateCartQuantity(demo.id, cartLine.id, 3));
+  await check("getCart reflects qty", async () =>
+    (await getCart(demo.id))[0]?.quantity,
+  );
+  await check("removeCartLine", () => removeCartLine(demo.id, cartLine.id));
 }
-check("clearCart", () => clearCart(demo.id));
-check("getCart after clear", () => getCart(demo.id).length);
+await check("clearCart", () => clearCart(demo.id));
+await check("getCart after clear", async () => (await getCart(demo.id)).length);
 
 console.log(`\nSignup flow`);
 const freshEmail = `smoke-${Date.now()}@wearnow.com`;
-const newId = createAccount({
+const newId = await createAccount({
   email: freshEmail,
   passwordHash: hashPassword("smoke-test-passphrase"),
   firstName: "Smoke",
   lastName: "Tester",
 });
-check("createAccount returns an id", () => typeof newId === "number");
-check("duplicate signup is refused", () =>
+await check("createAccount returns an id", () => typeof newId === "number");
+await check("duplicate signup is refused", () =>
   createAccount({
     email: freshEmail,
     passwordHash: hashPassword("another-passphrase"),
     firstName: "Dup",
     lastName: "Licate",
-  }) === null,
+  }).then((id) => id === null),
 );
-check("new account can sign in", () => {
-  const row = get<{ password_hash: string; role: string }>(
+await check("new account can sign in", async () => {
+  const row = (await get<{ password_hash: string; role: string }>(
     "SELECT password_hash, role FROM users WHERE email = ?",
     freshEmail,
-  )!;
+  ))!;
   return verifyPassword("smoke-test-passphrase", row.password_hash) && row.role === "customer";
 });
-check("wrong password rejected", () => {
-  const row = get<{ password_hash: string }>(
+await check("wrong password rejected", async () => {
+  const row = (await get<{ password_hash: string }>(
     "SELECT password_hash FROM users WHERE email = ?",
     freshEmail,
-  )!;
+  ))!;
   return !verifyPassword("not-the-password", row.password_hash);
 });
 // The opt-in runs in the same action as the user insert; it used to name a
 // table that does not exist, which only blew up on a real signup.
-check("marketing opt-in does not throw", () => subscribeToNewsletter(freshEmail).ok);
-check("marketing opt-in is idempotent", () => subscribeToNewsletter(freshEmail).ok);
-check("opted-in address is stored", () =>
-  get<{ n: number }>(
+await check("marketing opt-in does not throw", async () => (await subscribeToNewsletter(freshEmail)).ok);
+await check("marketing opt-in is idempotent", async () => (await subscribeToNewsletter(freshEmail)).ok);
+await check("opted-in address is stored", async () =>
+  (await get<{ n: number }>(
     "SELECT COUNT(*) AS n FROM newsletter_subscribers WHERE email = ?",
     freshEmail,
-  )?.n === 1,
+  ))?.n === 1,
 );
-check("fresh account has empty bag + wishlist", () => {
+await check("fresh account has empty bag + wishlist", async () => {
   if (newId === null) throw new Error("no id");
-  return getCart(newId).length === 0 && getWishlist(newId).length === 0;
+  const cart = await getCart(newId);
+  const wishlist = await getWishlist(newId);
+  return cart.length === 0 && wishlist.length === 0;
 });
 
 console.log(`\nWishlist mutations`);
-check("toggle on", () => toggleWishlistItem(demo.id, product.id).inWishlist);
-check("toggle off", () => toggleWishlistItem(demo.id, product.id).inWishlist);
+await check("toggle on", async () => (await toggleWishlistItem(demo.id, product.id)).inWishlist);
+await check("toggle off", async () => (await toggleWishlistItem(demo.id, product.id)).inWishlist);
 
 console.log(`\nOrder placement`);
-addToCart(demo.id, variant.id, 1);
-const orderLines = getCart(demo.id);
-const orderTotals = calculateTotals(orderLines, { shippingMethod: "standard" });
+await addToCart(demo.id, variant.id, 1);
+const orderLines = await getCart(demo.id);
+const orderTotals = await calculateTotals(orderLines, { shippingMethod: "standard" });
 const orderNumber = generateOrderNumber();
-check("createOrder", () =>
+await check("createOrder", () =>
   createOrder({
     orderNumber,
     userId: demo.id,
@@ -212,19 +219,23 @@ check("createOrder", () =>
     })),
   }),
 );
-check("getOrderForUser after insert", () => getOrderForUser(orderNumber, demo.id)?.orderNumber);
-check("getCart emptied by order", () => getCart(demo.id).length);
+await check("getOrderForUser after insert", async () =>
+  (await getOrderForUser(orderNumber, demo.id))?.orderNumber,
+);
+await check("getCart emptied by order", async () => (await getCart(demo.id)).length);
 
 console.log(`\nAdmin`);
-check("getAdminStats", () => getAdminStats());
-check("listAllOrders", () => listAllOrders(50));
-check("listDiscounts", () => listDiscounts());
-check("listCustomers", () => all("SELECT id FROM users").length);
-check("newsletter_subscribers table", () =>
-  all<{ n: number }>("SELECT COUNT(*) AS n FROM newsletter_subscribers")[0]?.n,
+await check("getAdminStats", () => getAdminStats());
+await check("listAllOrders", () => listAllOrders(50));
+await check("listDiscounts", () => listDiscounts());
+await check("listCustomers", async () => (await all("SELECT id FROM users")).length);
+await check("newsletter_subscribers table", async () =>
+  (await get<{ n: number }>("SELECT COUNT(*) AS n FROM newsletter_subscribers"))?.n,
 );
-check("subscribeToNewsletter", () => subscribeToNewsletter("smoke@wearnow.com").ok);
-check("subscribeToNewsletter is idempotent", () => subscribeToNewsletter("smoke@wearnow.com").ok);
+await check("subscribeToNewsletter", async () => (await subscribeToNewsletter("smoke@wearnow.com")).ok);
+await check("subscribeToNewsletter is idempotent", async () =>
+  (await subscribeToNewsletter("smoke@wearnow.com")).ok,
+);
 console.log(
   failures === 0
     ? "\nAll storefront queries passed.\n"

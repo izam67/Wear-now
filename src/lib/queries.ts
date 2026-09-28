@@ -1,4 +1,4 @@
-import { all, get, parseJson, scalar, run, transaction } from "./db";
+import { all, batch, get, parseJson, scalar, run } from "./db";
 import type {
   Address,
   Category,
@@ -159,7 +159,7 @@ const inList = (values: string[], column: string): Clause => {
   };
 };
 
-function buildClauses(query: ProductQuery): Clause[] {
+function buildClauses(query: ProductQuery):Clause[] {
   const {
     q,
     category = [],
@@ -243,7 +243,7 @@ const withoutFacet = (clauses: Clause[], facet: string) =>
   clauses.filter((c) => c.facet !== facet);
 
 /** Applies every filter/sort/pagination concern to a product query. */
-export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
+export async function queryProducts(query: ProductQuery = {}):Promise<ProductFilterResult> {
   const { sort = "newest", page = 1, perPage = PRODUCTS_PER_PAGE } = query;
   const clauses = buildClauses(query);
 
@@ -251,7 +251,7 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
 
   /* ---- Facet counts: each excludes its own dimension ---- */
   const categoryClauses = withoutFacet(clauses, "category");
-  const categoryFacets = all<{ value: string; label: string; count: number }>(
+  const categoryFacets = await all<{ value: string; label: string; count: number }>(
     `SELECT p.category_slug AS value, COALESCE(c.name, p.category_slug) AS label, COUNT(*) AS count
      ${JOIN}
      WHERE ${toSql(categoryClauses)}
@@ -261,7 +261,7 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
   );
 
   const sizeClauses = withoutFacet(clauses, "sizes");
-  const sizeFacets = all<{ value: string; count: number }>(
+  const sizeFacets = await all<{ value: string; count: number }>(
     `SELECT j.value AS value, COUNT(*) AS count
      ${JOIN}, json_each(p.sizes) j
      WHERE ${toSql(sizeClauses)}
@@ -271,7 +271,7 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
   );
 
   const colorClauses = withoutFacet(clauses, "colors");
-  const colorFacets = all<{ value: string; label: string; count: number }>(
+  const colorFacets = await all<{ value: string; label: string; count: number }>(
     `SELECT json_extract(j.value, '$.name') AS value,
             json_extract(j.value, '$.name') AS label,
             COUNT(*) AS count
@@ -282,7 +282,7 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
     ...toParams(colorClauses),
   );
 
-  const priceRow = get<{ min: number; max: number }>(
+  const priceRow = await get<{ min: number; max: number }>(
     "SELECT COALESCE(MIN(price), 0) AS min, COALESCE(MAX(price), 0) AS max FROM products WHERE status = 'active'",
   );
 
@@ -290,12 +290,12 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
   const whereSql = toSql(clauses);
   const params = toParams(clauses);
 
-  const total = scalar<number>(`SELECT COUNT(*) ${JOIN} WHERE ${whereSql}`, ...params) ?? 0;
+  const total = await scalar<number>(`SELECT COUNT(*) ${JOIN} WHERE ${whereSql}`, ...params) ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / perPage));
   const currentPage = Math.min(Math.max(1, page), pageCount);
   const offset = (currentPage - 1) * perPage;
 
-  const rows = all<ProductRow>(
+  const rows = await all<ProductRow>(
     `${PRODUCT_SELECT} WHERE ${whereSql} ORDER BY ${SORTS[sort] ?? SORTS.newest} LIMIT ? OFFSET ?`,
     ...params,
     perPage,
@@ -321,20 +321,20 @@ export function queryProducts(query: ProductQuery = {}): ProductFilterResult {
  * Convenience queries used across the storefront
  * ------------------------------------------------------------------ */
 
-export function getProductBySlug(slug: string): Product | null {
-  const row = get<ProductRow>(`${PRODUCT_SELECT} WHERE p.slug = ?`, slug);
+export async function getProductBySlug(slug: string):Promise<Product | null> {
+  const row = await get<ProductRow>(`${PRODUCT_SELECT} WHERE p.slug = ?`, slug);
   return row ? toProduct(row) : null;
 }
 
-export function getProductById(id: number): Product | null {
-  const row = get<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = ?`, id);
+export async function getProductById(id: number):Promise<Product | null> {
+  const row = await get<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = ?`, id);
   return row ? toProduct(row) : null;
 }
 
-export function getRelatedProducts(product: Product, limit = 4): Product[] {
+export async function getRelatedProducts(product: Product, limit = 4):Promise<Product[]> {
   // Same category first, then any other piece sharing a tag — a simple
   // relevance pass that avoids a vector store while still feeling curated.
-  const { products } = queryProducts({
+  const { products } = await queryProducts({
     excludeIds: [product.id],
     perPage: limit * 3,
     sort: "popular",
@@ -354,11 +354,11 @@ export function getRelatedProducts(product: Product, limit = 4): Product[] {
 }
 
 /** "Complete the look" — cross-category pieces that finish an outfit. */
-export function getCompleteTheLook(product: Product, limit = 4): Product[] {
+export async function getCompleteTheLook(product: Product, limit = 4):Promise<Product[]> {
   const otherCategories = ["women", "men", "shoes", "jewelry", "bags", "accessories"].filter(
     (c) => c !== product.categorySlug,
   );
-  const { products } = queryProducts({
+  const { products } = await queryProducts({
     category: otherCategories,
     excludeIds: [product.id],
     perPage: 40,
@@ -377,16 +377,16 @@ export function getCompleteTheLook(product: Product, limit = 4): Product[] {
     .slice(0, limit);
 }
 
-export function getNewArrivals(limit = 12): Product[] {
-  return queryProducts({ isNew: true, perPage: limit, sort: "newest" }).products;
+export async function getNewArrivals(limit = 12):Promise<Product[]> {
+  return (await queryProducts({ isNew: true, perPage: limit, sort: "newest" })).products;
 }
 
-export function getTrending(limit = 8): Product[] {
-  return queryProducts({ perPage: limit, sort: "popular" }).products;
+export async function getTrending(limit = 8):Promise<Product[]> {
+  return (await queryProducts({ perPage: limit, sort: "popular" })).products;
 }
 
-export function getBestSellers(limit = 4): Product[] {
-  const { products } = queryProducts({ perPage: limit, sort: "popular" });
+export async function getBestSellers(limit = 4):Promise<Product[]> {
+  const { products } = await queryProducts({ perPage: limit, sort: "popular" });
   const best = products.filter((p) => p.isBestSeller);
   return (best.length >= limit ? best : [...best, ...products.filter((p) => !p.isBestSeller)]).slice(
     0,
@@ -394,12 +394,12 @@ export function getBestSellers(limit = 4): Product[] {
   );
 }
 
-export function getOnSale(limit = 8): Product[] {
-  return queryProducts({ onSale: true, perPage: limit, sort: "popular" }).products;
+export async function getOnSale(limit = 8):Promise<Product[]> {
+  return (await queryProducts({ onSale: true, perPage: limit, sort: "popular" })).products;
 }
 
-export function getFeatured(limit = 6): Product[] {
-  return queryProducts({ perPage: 24, sort: "popular" }).products
+export async function getFeatured(limit = 6):Promise<Product[]> {
+  return (await queryProducts({ perPage: 24, sort: "popular" })).products
     .filter((p) => p.isFeatured)
     .slice(0, limit);
 }
@@ -408,15 +408,15 @@ export function getFeatured(limit = 6): Product[] {
  * Variants
  * ------------------------------------------------------------------ */
 
-export function getVariants(productId: number): Variant[] {
-  return all<Variant>(
+export async function getVariants(productId: number):Promise<Variant[]> {
+  return (await all<Variant>(
     "SELECT id, product_id AS productId, sku, color, size, stock FROM variants WHERE product_id = ? ORDER BY color, size",
     productId,
-  ).map((v) => ({ ...v }));
+  )).map((v) => ({ ...v }));
 }
 
-export function getVariant(id: number): Variant | null {
-  const row = get<{ id: number; product_id: number; sku: string; color: string; size: string; stock: number }>(
+export async function getVariant(id: number):Promise<Variant | null> {
+  const row = await get<{ id: number; product_id: number; sku: string; color: string; size: string; stock: number }>(
     "SELECT id, product_id, sku, color, size, stock FROM variants WHERE id = ?",
     id,
   );
@@ -427,10 +427,10 @@ export function getVariant(id: number): Variant | null {
  * Categories
  * ------------------------------------------------------------------ */
 
-export function listCategories(): Category[] {
-  return all<{ id: number; slug: string; name: string; tagline: string; description: string; image: string; sort_order: number }>(
+export async function listCategories():Promise<Category[]> {
+  return (await all<{ id: number; slug: string; name: string; tagline: string; description: string; image: string; sort_order: number }>(
     "SELECT id, slug, name, tagline, description, image, sort_order FROM categories ORDER BY sort_order, id",
-  ).map((r) => ({
+  )).map((r) => ({
     id: r.id,
     slug: r.slug,
     name: r.name,
@@ -441,8 +441,8 @@ export function listCategories(): Category[] {
   }));
 }
 
-export function getCategory(slug: string): Category | null {
-  const r = get<{ id: number; slug: string; name: string; tagline: string; description: string; image: string; sort_order: number }>(
+export async function getCategory(slug: string):Promise<Category | null> {
+  const r = await get<{ id: number; slug: string; name: string; tagline: string; description: string; image: string; sort_order: number }>(
     "SELECT id, slug, name, tagline, description, image, sort_order FROM categories WHERE slug = ?",
     slug,
   );
@@ -470,7 +470,7 @@ interface ReviewRow {
   created_at: string;
 }
 
-function toReview(r: ReviewRow): Review {
+function toReview(r: ReviewRow):Review {
   return {
     id: r.id,
     productId: r.product_id,
@@ -487,30 +487,30 @@ function toReview(r: ReviewRow): Review {
   };
 }
 
-export function getReviewsForProduct(productId: number, includeUnapproved = false): Review[] {
+export async function getReviewsForProduct(productId: number, includeUnapproved = false):Promise<Review[]> {
   const where = includeUnapproved
     ? "WHERE r.product_id = ?"
     : "WHERE r.product_id = ? AND r.status = 'approved'";
-  return all<ReviewRow>(
+  return (await all<ReviewRow>(
     `SELECT r.*, p.slug AS product_slug, p.name AS product_name
      FROM reviews r JOIN products p ON p.id = r.product_id
      ${where} ORDER BY r.created_at DESC`,
     productId,
-  ).map(toReview);
+  )).map(toReview);
 }
 
-export function getHomepageReviews(limit = 6): Review[] {
-  return all<ReviewRow>(
+export async function getHomepageReviews(limit = 6):Promise<Review[]> {
+  return (await all<ReviewRow>(
     `SELECT r.*, p.slug AS product_slug, p.name AS product_name
      FROM reviews r JOIN products p ON p.id = r.product_id
      WHERE r.status = 'approved' AND r.rating >= 4
      ORDER BY r.rating DESC, r.created_at DESC LIMIT ?`,
     limit,
-  ).map(toReview);
+  )).map(toReview);
 }
 
-export function ratingBreakdown(productId: number) {
-  const rows = all<{ rating: number; count: number }>(
+export async function ratingBreakdown(productId: number) {
+  const rows = await all<{ rating: number; count: number }>(
     "SELECT rating, COUNT(*) AS count FROM reviews WHERE product_id = ? AND status = 'approved' GROUP BY rating",
     productId,
   );
@@ -525,7 +525,7 @@ export function ratingBreakdown(productId: number) {
   };
 }
 
-export function createReview(input: {
+export async function createReview(input: {
   productId: number;
   userId: number | null;
   authorName: string;
@@ -535,7 +535,7 @@ export function createReview(input: {
   image?: string | null;
   verified?: boolean;
 }) {
-  const result = run(
+  const result = await run(
     `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
     input.productId,
@@ -547,13 +547,13 @@ export function createReview(input: {
     input.image ?? null,
     input.verified ?? false,
   );
-  recalculateProductRating(input.productId);
+  await recalculateProductRating(input.productId);
   return result.lastInsertRowid;
 }
 
 /** Keeps the denormalised rating/review_count on products in sync. */
-export function recalculateProductRating(productId: number) {
-  run(
+export async function recalculateProductRating(productId: number) {
+  await run(
     `UPDATE products SET
        rating = COALESCE((SELECT ROUND(AVG(rating), 1) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
        review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
@@ -568,32 +568,32 @@ export function recalculateProductRating(productId: number) {
  * Wishlist
  * ------------------------------------------------------------------ */
 
-export function getWishlist(userId: number): Product[] {
-  return all<ProductRow>(
+export async function getWishlist(userId: number):Promise<Product[]> {
+  return (await all<ProductRow>(
     `${PRODUCT_SELECT}
      JOIN wishlist_items w ON w.product_id = p.id
      WHERE w.user_id = ? AND p.status = 'active'
      ORDER BY w.created_at DESC`,
     userId,
-  ).map(toProduct);
+  )).map(toProduct);
 }
 
-export function toggleWishlistItem(userId: number, productId: number): { inWishlist: boolean } {
-  const existing = get<{ id: number }>(
+export async function toggleWishlistItem(userId: number, productId: number):Promise<{ inWishlist: boolean }> {
+  const existing = await get<{ id: number }>(
     "SELECT id FROM wishlist_items WHERE user_id = ? AND product_id = ?",
     userId,
     productId,
   );
   if (existing) {
-    run("DELETE FROM wishlist_items WHERE id = ?", existing.id);
+    await run("DELETE FROM wishlist_items WHERE id = ?", existing.id);
     return { inWishlist: false };
   }
-  run("INSERT INTO wishlist_items (user_id, product_id) VALUES (?, ?)", userId, productId);
+  await run("INSERT INTO wishlist_items (user_id, product_id) VALUES (?, ?)", userId, productId);
   return { inWishlist: true };
 }
 
-export function getWishlistProductIds(userId: number): number[] {
-  return all<{ product_id: number }>("SELECT product_id FROM wishlist_items WHERE user_id = ?", userId).map(
+export async function getWishlistProductIds(userId: number):Promise<number[]> {
+  return (await all<{ product_id: number }>("SELECT product_id FROM wishlist_items WHERE user_id = ?", userId)).map(
     (r) => r.product_id,
   );
 }
@@ -602,8 +602,8 @@ export function getWishlistProductIds(userId: number): number[] {
  * Cart
  * ------------------------------------------------------------------ */
 
-export function getCart(userId: number) {
-  const rows = all<{
+export async function getCart(userId: number) {
+  const rows = await all<{
     id: number;
     product_id: number;
     variant_id: number;
@@ -651,14 +651,14 @@ export function getCart(userId: number) {
 }
 
 /** Explicit union so `in`-narrowing works at the call site. */
-export function addToCart(
+export async function addToCart(
   userId: number,
   variantId: number,
   quantity: number,
-): { quantity: number } | { error: string } {
-  const variant = getVariant(variantId);
+):Promise<{ quantity: number } | { error: string }> {
+  const variant = await getVariant(variantId);
   if (!variant) return { error: "That option is no longer available" };
-  const existing = get<{ id: number; quantity: number }>(
+  const existing = await get<{ id: number; quantity: number }>(
     "SELECT id, quantity FROM cart_items WHERE user_id = ? AND variant_id = ?",
     userId,
     variantId,
@@ -668,13 +668,13 @@ export function addToCart(
   if (capped <= 0) return { error: "This option is out of stock" };
 
   if (existing) {
-    run(
+    await run(
       "UPDATE cart_items SET quantity = ?, updated_at = datetime('now') WHERE id = ?",
       capped,
       existing.id,
     );
   } else {
-    run(
+    await run(
       "INSERT INTO cart_items (user_id, variant_id, quantity) VALUES (?, ?, ?)",
       userId,
       variantId,
@@ -684,20 +684,20 @@ export function addToCart(
   return { quantity: capped };
 }
 
-export function updateCartQuantity(userId: number, lineId: number, quantity: number) {
+export async function updateCartQuantity(userId: number, lineId: number, quantity: number) {
   if (quantity <= 0) {
-    run("DELETE FROM cart_items WHERE id = ? AND user_id = ?", lineId, userId);
+    await run("DELETE FROM cart_items WHERE id = ? AND user_id = ?", lineId, userId);
     return { removed: true };
   }
-  const line = get<{ variant_id: number }>(
+  const line = await get<{ variant_id: number }>(
     "SELECT variant_id FROM cart_items WHERE id = ? AND user_id = ?",
     lineId,
     userId,
   );
   if (!line) return { removed: false };
-  const variant = getVariant(line.variant_id);
+  const variant = await getVariant(line.variant_id);
   const capped = variant ? Math.min(quantity, variant.stock) : quantity;
-  run(
+  await run(
     "UPDATE cart_items SET quantity = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?",
     Math.max(1, capped),
     lineId,
@@ -706,13 +706,13 @@ export function updateCartQuantity(userId: number, lineId: number, quantity: num
   return { removed: false };
 }
 
-export function removeCartLine(userId: number, lineId: number) {
-  run("DELETE FROM cart_items WHERE id = ? AND user_id = ?", lineId, userId);
+export async function removeCartLine(userId: number, lineId: number) {
+  await run("DELETE FROM cart_items WHERE id = ? AND user_id = ?", lineId, userId);
   return { removed: true };
 }
 
-export function clearCart(userId: number) {
-  run("DELETE FROM cart_items WHERE user_id = ?", userId);
+export async function clearCart(userId: number) {
+  await run("DELETE FROM cart_items WHERE user_id = ?", userId);
 }
 
 export interface CartTotals {
@@ -727,10 +727,10 @@ export interface CartTotals {
   discountError: string | null;
 }
 
-export function calculateTotals(
+export async function calculateTotals(
   lines: { price: number; quantity: number }[],
   opts: { discountCode?: string | null; shippingMethod?: string } = {},
-): CartTotals {
+):Promise<CartTotals> {
   const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
   const itemCount = lines.reduce((sum, l) => sum + l.quantity, 0);
 
@@ -742,7 +742,7 @@ export function calculateTotals(
   let freeShippingByCode = false;
 
   if (code) {
-    const found = get<{
+    const found = await get<{
       code: string;
       type: Discount["type"];
       value: number;
@@ -816,7 +816,7 @@ interface AddressRow {
   is_default: number;
 }
 
-function toAddress(r: AddressRow): Address {
+function toAddress(r: AddressRow):Address {
   return {
     id: r.id,
     userId: r.user_id,
@@ -834,22 +834,34 @@ function toAddress(r: AddressRow): Address {
   };
 }
 
-export function listAddresses(userId: number): Address[] {
-  return all<AddressRow>(
+export async function listAddresses(userId: number):Promise<Address[]> {
+  return (await all<AddressRow>(
     "SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC",
     userId,
-  ).map(toAddress);
+  )).map(toAddress);
 }
 
-export function saveAddress(userId: number, input: Omit<Address, "id" | "userId">): number {
-  return transaction(() => {
-    if (input.isDefault) {
-      run("UPDATE addresses SET is_default = 0 WHERE user_id = ?", userId);
-    }
-    const isFirst = !get<{ id: number }>("SELECT id FROM addresses WHERE user_id = ? LIMIT 1", userId);
-    const result = run(
-      `INSERT INTO addresses (user_id, label, first_name, last_name, line1, line2, city, region, postal_code, country, phone, is_default)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+export async function saveAddress(userId: number, input: Omit<Address, "id" | "userId">):Promise<number> {
+  // The "is this their first address" read has to happen before any writes,
+  // but the writes themselves must land as one unit: a half-applied default
+  // would leave two addresses flagged as the default.
+  const existing = await get<{ id: number }>(
+    "SELECT id FROM addresses WHERE user_id = ? LIMIT 1",
+    userId,
+  );
+  const makeDefault = input.isDefault || !existing;
+
+  const statements: { sql: string; args?: unknown[] }[] = [];
+  if (makeDefault) {
+    statements.push({
+      sql: "UPDATE addresses SET is_default = 0 WHERE user_id = ?",
+      args: [userId],
+    });
+  }
+  statements.push({
+    sql: `INSERT INTO addresses (user_id, label, first_name, last_name, line1, line2, city, region, postal_code, country, phone, is_default)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
       userId,
       input.label,
       input.firstName,
@@ -861,14 +873,20 @@ export function saveAddress(userId: number, input: Omit<Address, "id" | "userId"
       input.postalCode,
       input.country,
       input.phone,
-      input.isDefault || isFirst ? 1 : 0,
-    );
-    return result.lastInsertRowid;
+      makeDefault ? 1 : 0,
+    ],
   });
+
+  const results = await batch(statements);
+  const insert = results.at(-1);
+  if (!insert) {
+    throw new Error("Address was not saved");
+  }
+  return insert.lastInsertRowid;
 }
 
-export function deleteAddress(userId: number, id: number) {
-  run("DELETE FROM addresses WHERE id = ? AND user_id = ?", id, userId);
+export async function deleteAddress(userId: number, id: number) {
+  await run("DELETE FROM addresses WHERE id = ? AND user_id = ?", id, userId);
 }
 
 /* ------------------------------------------------------------------ *
@@ -883,24 +901,24 @@ export function deleteAddress(userId: number, id: number) {
  * `users` and `newsletter_subscribers` together is reachable from tests — the
  * two inserts used to drift apart silently.
  */
-export function createAccount(input: {
+export async function createAccount(input: {
   email: string;
   passwordHash: string;
   firstName: string;
   lastName: string;
-}): number | null {
-  if (get<{ id: number }>("SELECT id FROM users WHERE email = ?", input.email)) {
+}):Promise<number | null> {
+  if (await get<{ id: number }>("SELECT id FROM users WHERE email = ?", input.email)) {
     return null;
   }
 
-  return run(
+  return (await run(
     `INSERT INTO users (email, password_hash, first_name, last_name, role)
      VALUES (?, ?, ?, ?, 'customer')`,
     input.email,
     input.passwordHash,
     input.firstName,
     input.lastName,
-  ).lastInsertRowid;
+  )).lastInsertRowid;
 }
 
 /* ------------------------------------------------------------------ *
@@ -945,7 +963,7 @@ interface OrderRow {
   updated_at: string;
 }
 
-function toOrder(r: OrderRow, items: OrderItem[] = []): Order {
+function toOrder(r: OrderRow, items: OrderItem[] = []):Order {
   return {
     id: r.id,
     orderNumber: r.order_number,
@@ -973,20 +991,22 @@ function toOrder(r: OrderRow, items: OrderItem[] = []): Order {
   };
 }
 
-function getOrderItems(orderId: number): OrderItem[] {
-  return all<{
-    id: number;
-    order_id: number;
-    product_id: number | null;
-    product_slug: string;
-    name: string;
-    subtitle: string;
-    image: string;
-    color: string;
-    size: string;
-    price: number;
-    quantity: number;
-  }>("SELECT * FROM order_items WHERE order_id = ? ORDER BY id", orderId).map((i) => ({
+interface OrderItemRow {
+  id: number;
+  order_id: number;
+  product_id: number | null;
+  product_slug: string;
+  name: string;
+  subtitle: string;
+  image: string;
+  color: string;
+  size: string;
+  price: number;
+  quantity: number;
+}
+
+function toOrderItem(i: OrderItemRow): OrderItem {
+  return {
     id: i.id,
     orderId: i.order_id,
     productId: i.product_id,
@@ -998,25 +1018,60 @@ function getOrderItems(orderId: number): OrderItem[] {
     size: i.size,
     price: i.price,
     quantity: i.quantity,
-  }));
+  };
 }
 
-export function getOrderByNumber(orderNumber: string): Order | null {
-  const row = get<OrderRow>("SELECT * FROM orders WHERE order_number = ?", orderNumber);
-  return row ? toOrder(row, getOrderItems(row.id)) : null;
+async function getOrderItems(orderId: number):Promise<OrderItem[]> {
+  const rows = await all<OrderItemRow>(
+    "SELECT * FROM order_items WHERE order_id = ? ORDER BY id",
+    orderId,
+  );
+  return rows.map(toOrderItem);
 }
 
-export function getOrderForUser(orderNumber: string, userId: number): Order | null {
-  const row = get<OrderRow>("SELECT * FROM orders WHERE order_number = ? AND user_id = ?", orderNumber, userId);
-  return row ? toOrder(row, getOrderItems(row.id)) : null;
+/**
+ * Line items for a whole list of orders, in one round trip.
+ *
+ * Loading an order history one query per order is fine against a local file but
+ * turns into a round trip per row once the database is remote, which is slow
+ * enough to be felt on the account page. Fetching them together and grouping in
+ * memory keeps it to two queries regardless of history length.
+ */
+async function getOrderItemsByOrder(
+  orderIds: number[],
+):Promise<Map<number, OrderItem[]>> {
+  const grouped = new Map<number, OrderItem[]>();
+  if (orderIds.length === 0) return grouped;
+
+  const rows = await all<OrderItemRow>(
+    `SELECT * FROM order_items WHERE order_id IN (${orderIds.map(() => "?").join(",")}) ORDER BY id`,
+    ...orderIds,
+  );
+  for (const row of rows) {
+    const list = grouped.get(row.order_id);
+    if (list) list.push(toOrderItem(row));
+    else grouped.set(row.order_id, [toOrderItem(row)]);
+  }
+  return grouped;
 }
 
-export function listOrdersForUser(userId: number): Order[] {
-  const rows = all<OrderRow>("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC", userId);
-  return rows.map((r) => toOrder(r, getOrderItems(r.id)));
+export async function getOrderByNumber(orderNumber: string):Promise<Order | null> {
+  const row = await get<OrderRow>("SELECT * FROM orders WHERE order_number = ?", orderNumber);
+  return row ? toOrder(row, (await getOrderItems(row.id))) : null;
 }
 
-export function createOrder(input: {
+export async function getOrderForUser(orderNumber: string, userId: number):Promise<Order | null> {
+  const row = await get<OrderRow>("SELECT * FROM orders WHERE order_number = ? AND user_id = ?", orderNumber, userId);
+  return row ? toOrder(row, (await getOrderItems(row.id))) : null;
+}
+
+export async function listOrdersForUser(userId: number):Promise<Order[]> {
+  const rows = await all<OrderRow>("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC", userId);
+  const items = await getOrderItemsByOrder(rows.map((r) => r.id));
+  return rows.map((r) => toOrder(r, items.get(r.id) ?? []));
+}
+
+export async function createOrder(input: {
   orderNumber: string;
   userId: number | null;
   email: string;
@@ -1046,35 +1101,45 @@ export function createOrder(input: {
     variantId: number;
   }[];
 }) {
-  return transaction(() => {
-    const { lastInsertRowid: orderId } = run(
-      `INSERT INTO orders
-        (order_number, user_id, email, first_name, last_name, status, subtotal, discount, shipping, tax, total,
-         discount_code, shipping_method, payment_last4, notes, address_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      input.orderNumber,
-      input.userId,
-      input.email,
-      input.firstName,
-      input.lastName,
-      input.status,
-      input.subtotal,
-      input.discount,
-      input.shipping,
-      input.tax,
-      input.total,
-      input.discountCode,
-      input.shippingMethod,
-      input.paymentLast4,
-      input.notes,
-      JSON.stringify(input.address ?? {}),
-    );
+  // Everything lands in a single atomic batch: the order, its line items, the
+  // stock decrements, the discount counter, and clearing the bag. A partially
+  // applied order would mean charging someone for stock we never took.
+  //
+  // `order_number` is UNIQUE, so the line items resolve their order with a
+  // subquery. That keeps the whole write to one round trip, which is what makes
+  // it atomic over HTTP — there is no id to thread through from step one.
+  const statements: { sql: string; args?: unknown[] }[] = [
+    {
+      sql: `INSERT INTO orders
+              (order_number, user_id, email, first_name, last_name, status, subtotal, discount, shipping, tax, total,
+               discount_code, shipping_method, payment_last4, notes, address_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        input.orderNumber,
+        input.userId,
+        input.email,
+        input.firstName,
+        input.lastName,
+        input.status,
+        input.subtotal,
+        input.discount,
+        input.shipping,
+        input.tax,
+        input.total,
+        input.discountCode,
+        input.shippingMethod,
+        input.paymentLast4,
+        input.notes,
+        JSON.stringify(input.address ?? {}),
+      ],
+    },
+  ];
 
-    for (const item of input.items) {
-      run(
-        `INSERT INTO order_items (order_id, product_id, product_slug, name, subtitle, image, color, size, price, quantity)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        orderId,
+  for (const item of input.items) {
+    statements.push({
+      sql: `INSERT INTO order_items (order_id, product_id, product_slug, name, subtitle, image, color, size, price, quantity)
+            SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM orders WHERE order_number = ?`,
+      args: [
         item.productId,
         item.slug,
         item.name,
@@ -1084,34 +1149,52 @@ export function createOrder(input: {
         item.size,
         item.price,
         item.quantity,
-      );
-      // Stock is decremented here, in the same transaction as the order, so a
-      // failed write can never leave inventory inconsistent with sales.
-      run("UPDATE variants SET stock = MAX(0, stock - ?) WHERE id = ?", item.quantity, item.variantId);
-    }
+        input.orderNumber,
+      ],
+    });
+    // Stock moves in the same batch as the order, so a failed write can never
+    // leave inventory inconsistent with sales.
+    statements.push({
+      sql: "UPDATE variants SET stock = MAX(0, stock - ?) WHERE id = ?",
+      args: [item.quantity, item.variantId],
+    });
+  }
 
-    if (input.discountCode) {
-      run("UPDATE discounts SET used_count = used_count + 1 WHERE code = ?", input.discountCode);
-    }
+  if (input.discountCode) {
+    statements.push({
+      sql: "UPDATE discounts SET used_count = used_count + 1 WHERE code = ?",
+      args: [input.discountCode],
+    });
+  }
 
-    if (input.userId) {
-      run("DELETE FROM cart_items WHERE user_id = ?", input.userId);
-    }
+  if (input.userId) {
+    statements.push({
+      sql: "DELETE FROM cart_items WHERE user_id = ?",
+      args: [input.userId],
+    });
+  }
 
-    return orderId;
-  });
+  await batch(statements);
+
+  // Read the id back rather than trusting the batched lastInsertRowid: with
+  // concurrent writers that value is not guaranteed to be ours.
+  const row = await get<{ id: number }>("SELECT id FROM orders WHERE order_number = ?", input.orderNumber);
+  if (!row) {
+    throw new Error(`Order ${input.orderNumber} was not written`);
+  }
+  return row.id;
 }
 
-export function updateOrderStatus(orderId: number, status: Order["status"]) {
-  run(
+export async function updateOrderStatus(orderId: number, status: Order["status"]) {
+  await run(
     "UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?",
     status,
     orderId,
   );
 }
 
-export function attachTracking(orderId: number, carrier: string, trackingNumber: string) {
-  run(
+export async function attachTracking(orderId: number, carrier: string, trackingNumber: string) {
+  await run(
     "UPDATE orders SET carrier = ?, tracking_number = ?, updated_at = datetime('now') WHERE id = ?",
     carrier,
     trackingNumber,
@@ -1123,10 +1206,10 @@ export function attachTracking(orderId: number, carrier: string, trackingNumber:
  * Newsletter
  * ------------------------------------------------------------------ */
 
-export function subscribeToNewsletter(email: string): { ok: boolean; message: string } {
-  const existing = get<{ id: number }>("SELECT id FROM newsletter_subscribers WHERE email = ?", email);
+export async function subscribeToNewsletter(email: string):Promise<{ ok: boolean; message: string }> {
+  const existing = await get<{ id: number }>("SELECT id FROM newsletter_subscribers WHERE email = ?", email);
   if (existing) return { ok: true, message: "You're already on the list." };
-  run("INSERT INTO newsletter_subscribers (email) VALUES (?)", email);
+  await run("INSERT INTO newsletter_subscribers (email) VALUES (?)", email);
   return { ok: true, message: "Welcome in. Check your inbox for 10% off." };
 }
 
@@ -1134,8 +1217,8 @@ export function subscribeToNewsletter(email: string): { ok: boolean; message: st
  * Inspiration
  * ------------------------------------------------------------------ */
 
-export function listInspiration(): InspirationPost[] {
-  return all<{
+export async function listInspiration():Promise<InspirationPost[]> {
+  return (await all<{
     id: number;
     slug: string;
     title: string;
@@ -1143,7 +1226,7 @@ export function listInspiration(): InspirationPost[] {
     image: string;
     aspect: string;
     product_slugs: string;
-  }>("SELECT * FROM inspiration_posts ORDER BY sort_order, id").map((r) => ({
+  }>("SELECT * FROM inspiration_posts ORDER BY sort_order, id")).map((r) => ({
     id: r.id,
     slug: r.slug,
     title: r.title,
@@ -1155,8 +1238,8 @@ export function listInspiration(): InspirationPost[] {
   }));
 }
 
-export function getInspirationPost(slug: string): InspirationPost | null {
-  const posts = listInspiration();
+export async function getInspirationPost(slug: string):Promise<InspirationPost | null> {
+  const posts = await listInspiration();
   return posts.find((p) => p.slug === slug) ?? null;
 }
 
@@ -1164,36 +1247,36 @@ export function getInspirationPost(slug: string): InspirationPost | null {
  * Admin aggregates
  * ------------------------------------------------------------------ */
 
-export function getAdminStats() {
-  const revenueRow = get<{ revenue: number; orders: number }>(
+export async function getAdminStats() {
+  const revenueRow = await get<{ revenue: number; orders: number }>(
     "SELECT COALESCE(SUM(total), 0) AS revenue, COUNT(*) AS orders FROM orders WHERE status != 'cancelled'",
   );
-  const customers = scalar<number>("SELECT COUNT(*) FROM users WHERE role = 'customer'") ?? 0;
-  const products = scalar<number>("SELECT COUNT(*) FROM products WHERE status = 'active'") ?? 0;
-  const lowStock = all<{ id: number; name: string; slug: string; stock: number }>(
+  const customers = await scalar<number>("SELECT COUNT(*) FROM users WHERE role = 'customer'") ?? 0;
+  const products = await scalar<number>("SELECT COUNT(*) FROM products WHERE status = 'active'") ?? 0;
+  const lowStock = await all<{ id: number; name: string; slug: string; stock: number }>(
     `SELECT p.id, p.name, p.slug, COALESCE(SUM(v.stock), 0) AS stock
      FROM products p JOIN variants v ON v.product_id = p.id
      GROUP BY p.id HAVING stock <= 8 ORDER BY stock ASC LIMIT 8`,
   );
-  const pendingReviews = scalar<number>("SELECT COUNT(*) FROM reviews WHERE status = 'pending'") ?? 0;
-  const openOrders = scalar<number>(
+  const pendingReviews = await scalar<number>("SELECT COUNT(*) FROM reviews WHERE status = 'pending'") ?? 0;
+  const openOrders = await scalar<number>(
     "SELECT COUNT(*) FROM orders WHERE status IN ('confirmed','processing','shipped','out_for_delivery')",
   ) ?? 0;
 
   // 30-day revenue series for the dashboard sparkline.
-  const series = all<{ day: string; revenue: number; orders: number }>(
+  const series = await all<{ day: string; revenue: number; orders: number }>(
     `SELECT date(created_at) AS day, COALESCE(SUM(total), 0) AS revenue, COUNT(*) AS orders
      FROM orders WHERE status != 'cancelled' AND created_at >= date('now', '-29 days')
      GROUP BY day ORDER BY day`,
   );
 
-  const topProducts = all<{ name: string; slug: string; units: number; revenue: number }>(
+  const topProducts = await all<{ name: string; slug: string; units: number; revenue: number }>(
     `SELECT p.name, p.slug, SUM(oi.quantity) AS units, SUM(oi.quantity * oi.price) AS revenue
      FROM order_items oi JOIN products p ON p.id = oi.product_id
      GROUP BY p.id ORDER BY units DESC LIMIT 6`,
   );
 
-  const byCategory = all<{ label: string; value: number; count: number }>(
+  const byCategory = await all<{ label: string; value: number; count: number }>(
     `SELECT c.name AS label, COUNT(p.id) AS value, COALESCE(SUM(p.popularity), 0) AS count
      FROM categories c LEFT JOIN products p ON p.category_slug = c.slug AND p.status = 'active'
      GROUP BY c.slug ORDER BY value DESC`,
@@ -1223,8 +1306,8 @@ export interface CustomerSummary {
   spend: number;
 }
 
-export function listCustomers(): CustomerSummary[] {
-  return all<{
+export async function listCustomers():Promise<CustomerSummary[]> {
+  return (await all<{
     id: number;
     email: string;
     first_name: string;
@@ -1237,7 +1320,7 @@ export function listCustomers(): CustomerSummary[] {
             (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id AND o.status != 'cancelled') AS order_count,
             (SELECT COALESCE(SUM(o.total), 0) FROM orders o WHERE o.user_id = u.id AND o.status != 'cancelled') AS spend
      FROM users u WHERE u.role = 'customer' ORDER BY spend DESC`,
-  ).map((r) => ({
+  )).map((r) => ({
     id: r.id,
     email: r.email,
     firstName: r.first_name,
@@ -1248,27 +1331,28 @@ export function listCustomers(): CustomerSummary[] {
   }));
 }
 
-export function listAllOrders(limit = 200): Order[] {
-  const rows = all<OrderRow>("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?", limit);
-  return rows.map((r) => toOrder(r, getOrderItems(r.id)));
+export async function listAllOrders(limit = 200):Promise<Order[]> {
+  const rows = await all<OrderRow>("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?", limit);
+  const items = await getOrderItemsByOrder(rows.map((r) => r.id));
+  return rows.map((r) => toOrder(r, items.get(r.id) ?? []));
 }
 
-export function listAllReviews(): Review[] {
-  return all<ReviewRow>(
+export async function listAllReviews():Promise<Review[]> {
+  return (await all<ReviewRow>(
     `SELECT r.*, p.slug AS product_slug, p.name AS product_name
      FROM reviews r JOIN products p ON p.id = r.product_id
      ORDER BY r.created_at DESC`,
-  ).map(toReview);
+  )).map(toReview);
 }
 
-export function moderateReview(reviewId: number, status: Review["status"]) {
-  run("UPDATE reviews SET status = ? WHERE id = ?", status, reviewId);
-  const row = get<{ product_id: number }>("SELECT product_id FROM reviews WHERE id = ?", reviewId);
-  if (row) recalculateProductRating(row.product_id);
+export async function moderateReview(reviewId: number, status: Review["status"]) {
+  await run("UPDATE reviews SET status = ? WHERE id = ?", status, reviewId);
+  const row = await get<{ product_id: number }>("SELECT product_id FROM reviews WHERE id = ?", reviewId);
+  if (row) await recalculateProductRating(row.product_id);
 }
 
-export function listDiscounts(): Discount[] {
-  return all<{
+export async function listDiscounts():Promise<Discount[]> {
+  return (await all<{
     id: number;
     code: string;
     description: string;
@@ -1281,7 +1365,7 @@ export function listDiscounts(): Discount[] {
     ends_at: string | null;
     usage_limit: number | null;
     used_count: number;
-  }>("SELECT * FROM discounts ORDER BY active DESC, id DESC").map((d) => ({
+  }>("SELECT * FROM discounts ORDER BY active DESC, id DESC")).map((d) => ({
     id: d.id,
     code: d.code,
     description: d.description,

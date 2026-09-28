@@ -32,7 +32,7 @@ export default async function OrderDetailPage({
 
   // Scoped to the signed-in user, so another customer's order number 404s
   // rather than leaking the fact that it exists.
-  const order = getOrderForUser(orderNumber, user.id);
+  const order = await getOrderForUser(orderNumber, user.id);
   if (!order) notFound();
 
   return (

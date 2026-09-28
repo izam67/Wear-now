@@ -15,10 +15,10 @@ export default async function ProfilePage() {
   const user = await currentUser();
   if (!user) redirect("/login?next=%2Faccount%2Fprofile");
 
-  const orders = listOrdersForUser(user.id);
-  const saved = getWishlist(user.id);
+  const orders = await listOrdersForUser(user.id);
+  const saved = await getWishlist(user.id);
   const phone =
-    all<{ phone: string | null }>("SELECT phone FROM users WHERE id = ?", user.id)[0]?.phone ?? null;
+    (await all<{ phone: string | null }>("SELECT phone FROM users WHERE id = ?", user.id))[0]?.phone ?? null;
 
   return (
     <div className="container-page py-12 lg:py-20">

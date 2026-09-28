@@ -125,7 +125,7 @@ export async function signup(_prev: AuthState, formData: FormData): Promise<Auth
     return { error: "Too many attempts. Please wait a few minutes and try again." };
   }
 
-  if (findUserByEmail(email)) {
+  if (await findUserByEmail(email)) {
     // Do not confirm which emails are registered — that is an account-enumeration
     // oracle. The user is simply told to sign in instead.
     return {
@@ -133,7 +133,7 @@ export async function signup(_prev: AuthState, formData: FormData): Promise<Auth
       fieldErrors: { email: "An account already uses this email. Try signing in instead." },
     };
   }
-  const userId = createAccount({
+  const userId = await createAccount({
     email,
     passwordHash: hashPassword(password),
     firstName,
@@ -147,7 +147,7 @@ export async function signup(_prev: AuthState, formData: FormData): Promise<Auth
   // A new account starts with the address book empty; the checkout flow
   // collects the first shipping address inline.
   if (parsed.data.marketing === "on") {
-    subscribeToNewsletter(email);
+    await subscribeToNewsletter(email);
   }
 
   await startSession({ sub: userId, email, role: "customer" });
@@ -174,7 +174,7 @@ export async function login(_prev: AuthState, formData: FormData): Promise<AuthS
     return { error: "Too many sign-in attempts. Please wait a few minutes and try again." };
   }
 
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
 
   // Always run a hash comparison, even when the user does not exist, so the
   // response time does not reveal whether the email is registered.

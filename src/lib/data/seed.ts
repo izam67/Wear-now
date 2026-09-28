@@ -1,4 +1,4 @@
-import { getDb, run, transaction } from "../db";
+import { all, batch, get, run, scalar } from "../db";
 import { hashPassword } from "../auth";
 import { CATALOG, CATEGORIES, INSPIRATION } from "./catalog";
 import { POOL } from "../images";
@@ -127,36 +127,37 @@ export interface SeedResult {
 }
 
 /** Empties every content table, leaving the schema in place. */
-function truncateAll() {
-  const db = getDb();
-  for (const table of [
+async function truncateAll(): Promise<void> {
+  const tables = [
     "order_items", "orders", "cart_items", "wishlist_items", "reviews",
     "variants", "products", "categories", "inspiration_posts",
     "discounts", "newsletter_subscribers", "addresses", "users",
-  ]) {
-    db.exec(`DELETE FROM ${table}`);
-  }
-  db.exec("DELETE FROM sqlite_sequence");
+  ];
+  await batch([
+    ...tables.map((table) => ({ sql: `DELETE FROM ${table}` })),
+    { sql: "DELETE FROM sqlite_sequence" },
+  ]);
 }
 
-export function isSeeded(): boolean {
-  const row = getDb()
-    .prepare("SELECT COUNT(*) AS c FROM products")
-    .get() as { c: number } | undefined;
-  return (row?.c ?? 0) > 0;
+export async function isSeeded(): Promise<boolean> {
+  return ((await scalar<number>("SELECT COUNT(*) FROM products")) ?? 0) > 0;
 }
 
 /**
  * Populates an empty database. Safe to call on every boot — it no-ops when
  * products already exist unless `force` is set.
  */
-export function seed(force = false): SeedResult {
-  if (!force && isSeeded()) {
+export async function seed(force = false): Promise<SeedResult> {
+  if (!force && (await isSeeded())) {
     return { categories: 0, products: 0, variants: 0, reviews: 0, users: 0, orders: 0, inspiration: 0, discounts: 0 };
   }
 
-  return transaction((): SeedResult => {
-    if (force) truncateAll();
+  // Sequential rather than one big batch: this writes a few thousand rows, and
+  // a single batch that large risks hitting a request-size limit against a
+  // remote database. Each await is one round trip, which is fine for a one-time
+  // setup step.
+  {
+    if (force) await truncateAll();
 
     const result: SeedResult = {
       categories: 0, products: 0, variants: 0, reviews: 0,
@@ -164,19 +165,19 @@ export function seed(force = false): SeedResult {
     };
 
     /* ---- Categories ---- */
-    CATEGORIES.forEach((c, i) => {
-      run(
+    for (const [i, c] of CATEGORIES.entries()) {
+      await run(
         `INSERT INTO categories (slug, name, tagline, description, image, sort_order)
          VALUES (?, ?, ?, ?, ?, ?)`,
         c.slug, c.name, c.tagline, c.description, c.image, i + 1,
       );
       result.categories += 1;
-    });
+    }
 
     /* ---- Products + variants ---- */
     for (const product of CATALOG) {
       const images = galleryFor(product, 3);
-      run(
+      await run(
         `INSERT INTO products
           (slug, name, subtitle, description, category_slug, gender, price, compare_at,
            images, colors, sizes, materials, care, details, tags,
@@ -198,9 +199,7 @@ export function seed(force = false): SeedResult {
       );
       result.products += 1;
 
-      const productId = Number(
-        (getDb().prepare("SELECT id FROM products WHERE slug = ?").get(product.slug) as { id: number }).id,
-      );
+      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
 
       // SKU is derived from the product id, not the slug — slug prefixes are
       // not unique once punctuation is stripped, which silently collided.
@@ -214,7 +213,7 @@ export function seed(force = false): SeedResult {
             if (n >= 35 && n <= 45) continue;
           }
           const stock = rand() < 0.08 ? 0 : between(1, 40);
-          run(
+          await run(
             "INSERT INTO variants (product_id, sku, color, size, stock) VALUES (?, ?, ?, ?, ?)",
             productId,
             `${code}-${String(colorIndex + 1).padStart(2, "0")}-${size}`,
@@ -229,9 +228,7 @@ export function seed(force = false): SeedResult {
 
     /* ---- Reviews + recalculated ratings ---- */
     for (const product of CATALOG) {
-      const productId = Number(
-        (getDb().prepare("SELECT id FROM products WHERE slug = ?").get(product.slug) as { id: number }).id,
-      );
+      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
       // A higher-popularity product has been around longer and has more reviews.
       const count = product.isBestSeller ? between(6, 11) : between(2, 6);
 
@@ -242,7 +239,7 @@ export function seed(force = false): SeedResult {
         const line = pick(lines);
         const hasImage = rating === 5 && rand() < 0.28;
 
-        run(
+        await run(
           `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, 'approved', ?)`,
           productId,
@@ -256,7 +253,7 @@ export function seed(force = false): SeedResult {
         result.reviews += 1;
       }
 
-      run(
+      await run(
         `UPDATE products SET
            rating = COALESCE((SELECT ROUND(AVG(rating), 1) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
            review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
@@ -268,10 +265,8 @@ export function seed(force = false): SeedResult {
     /* ---- A few unapproved reviews for the admin queue ---- */
     for (let i = 0; i < 4; i += 1) {
       const product = pick(CATALOG);
-      const productId = Number(
-        (getDb().prepare("SELECT id FROM products WHERE slug = ?").get(product.slug) as { id: number }).id,
-      );
-      run(
+      const productId = (await get<{ id: number }>("SELECT id FROM products WHERE slug = ?", product.slug))!.id;
+      await run(
         `INSERT INTO reviews (product_id, user_id, author_name, rating, title, body, image, verified, status, created_at)
          VALUES (?, NULL, ?, 5, ?, ?, NULL, 0, 'pending', ?)`,
         productId,
@@ -297,7 +292,7 @@ export function seed(force = false): SeedResult {
 
     const userIds: number[] = [];
     for (const u of users) {
-      const { lastInsertRowid } = run(
+      const { lastInsertRowid } = await run(
         `INSERT INTO users (email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?)`,
         u.email, hashPassword(u.password), u.first, u.last, u.role,
       );
@@ -311,7 +306,7 @@ export function seed(force = false): SeedResult {
       { label: "Studio", line1: "1120 Abbot Kinney Blvd", line2: null, city: "Venice", region: "CA", postal: "90291", phone: "+1 310 555 0119", isDefault: 0 },
     ];
     for (const a of addresses) {
-      run(
+      await run(
         `INSERT INTO addresses (user_id, label, first_name, last_name, line1, line2, city, region, postal_code, country, phone, is_default)
          VALUES (?, ?, 'Jordan', 'Blake', ?, ?, ?, ?, ?, 'United States', ?, ?)`,
         userIds[1], a.label, a.line1, a.line2, a.city, a.region, a.postal, a.phone, a.isDefault,
@@ -320,13 +315,18 @@ export function seed(force = false): SeedResult {
 
     /* ---- Historical orders for the demo customer ---- */
     const demoId = userIds[1]!;
-    const productRows = getDb()
-      .prepare("SELECT id, slug, name, subtitle, images, price FROM products WHERE status = 'active'")
-      .all() as { id: number; slug: string; name: string; subtitle: string; images: string; price: number }[];
+    const productRows = await all<{
+      id: number;
+      slug: string;
+      name: string;
+      subtitle: string;
+      images: string;
+      price: number;
+    }>("SELECT id, slug, name, subtitle, images, price FROM products WHERE status = 'active'");
 
     const statuses = ["delivered", "delivered", "shipped", "processing", "delivered"] as const;
 
-    statuses.forEach((status, index) => {
+    for (const [index, status] of statuses.entries()) {
       const lineCount = between(1, 3);
       const lines: { productId: number; slug: string; name: string; subtitle: string; image: string; price: number; quantity: number }[] = [];
       for (let i = 0; i < lineCount; i += 1) {
@@ -342,7 +342,7 @@ export function seed(force = false): SeedResult {
           quantity: between(1, 2),
         });
       }
-      if (lines.length === 0) return;
+      if (lines.length === 0) continue;
 
       const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
       const shipping = subtotal >= STORE.freeShippingThreshold ? 0 : 1200;
@@ -353,7 +353,7 @@ export function seed(force = false): SeedResult {
       const address = addresses[0]!;
       const carrier = pick(CARRIERS);
 
-      const { lastInsertRowid: orderId } = run(
+      const { lastInsertRowid: orderId } = await run(
         `INSERT INTO orders
           (order_number, user_id, email, first_name, last_name, status, subtotal, discount, shipping, tax, total,
            shipping_method, payment_last4, carrier, tracking_number, address_json, created_at, updated_at)
@@ -371,18 +371,18 @@ export function seed(force = false): SeedResult {
       );
 
       for (const line of lines) {
-        run(
+        await run(
           `INSERT INTO order_items (order_id, product_id, product_slug, name, subtitle, image, color, size, price, quantity)
            VALUES (?, ?, ?, ?, ?, ?, 'Default', 'M', ?, ?)`,
           orderId, line.productId, line.slug, line.name, line.subtitle, line.image, line.price, line.quantity,
         );
       }
       result.orders += 1;
-    });
+    }
 
     // Wishlist seed for the demo account.
     for (const row of productRows.filter(() => rand() < 0.12).slice(0, 4)) {
-      run(
+      await run(
         "INSERT OR IGNORE INTO wishlist_items (user_id, product_id, created_at) VALUES (?, ?, ?)",
         demoId, row.id, createdAt(between(1, 20)),
       );
@@ -399,7 +399,7 @@ export function seed(force = false): SeedResult {
 
     for (const d of discounts) {
       const expires = new Date(Date.now() + d.days * 86_400_000).toISOString().slice(0, 19).replace("T", " ");
-      run(
+      await run(
         `INSERT INTO discounts (code, description, type, value, min_subtotal, max_discount, active, starts_at, ends_at, usage_limit)
          VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, 500)`,
         d.code, d.description, d.type, d.value, d.min, d.max, expires,
@@ -408,44 +408,43 @@ export function seed(force = false): SeedResult {
     }
 
     /* ---- Inspiration board ---- */
-    INSPIRATION.forEach((post, i) => {
+    for (const [i, post] of INSPIRATION.entries()) {
       const pool = POOL[post.pool];
       const start = hash(post.slug) % pool.length;
       const image = pool[(start + 2) % pool.length]!;
-      run(
+      await run(
         `INSERT INTO inspiration_posts (slug, title, category, image, aspect, product_slugs, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         post.slug, post.title, post.category, image, post.aspect,
         JSON.stringify(post.productSlugs), i + 1,
       );
       result.inspiration += 1;
-    });
+    }
 
     /* ---- Newsletter ---- */
     for (const email of ["imogen.hart@example.com", "desmond.ade@example.com"]) {
-      run("INSERT OR IGNORE INTO newsletter_subscribers (email) VALUES (?)", email);
+      await run("INSERT OR IGNORE INTO newsletter_subscribers (email) VALUES (?)", email);
     }
 
     return result;
-  });
+  }
 }
 
 /** Validates that the seeded content is internally consistent. */
-export function verifySeed(): string[] {
+export async function verifySeed(): Promise<string[]> {
   const problems: string[] = [];
-  const db = getDb();
 
-  const productCount = (db.prepare("SELECT COUNT(*) AS c FROM products").get() as { c: number }).c;
+  const productCount = (await scalar<number>("SELECT COUNT(*) FROM products")) ?? 0;
   if (productCount === 0) problems.push("No products were seeded.");
 
   // Every inspiration tile must point at products that exist, otherwise the
   // tile's "shop the look" grid renders empty.
   const slugs = new Set(
-    (db.prepare("SELECT slug FROM products").all() as { slug: string }[]).map((r) => r.slug),
+    (await all<{ slug: string }>("SELECT slug FROM products")).map((r) => r.slug),
   );
-  for (const row of db
-    .prepare("SELECT slug, product_slugs FROM inspiration_posts")
-    .all() as { slug: string; product_slugs: string }[]) {
+  for (const row of await all<{ slug: string; product_slugs: string }>(
+    "SELECT slug, product_slugs FROM inspiration_posts",
+  )) {
     const refs = JSON.parse(row.product_slugs) as string[];
     for (const ref of refs) {
       if (!slugs.has(ref)) problems.push(`Inspiration "${row.slug}" references missing product "${ref}".`);
@@ -453,26 +452,31 @@ export function verifySeed(): string[] {
   }
 
   // Every product needs at least one variant or it can never be bought.
-  for (const row of db
-    .prepare("SELECT p.slug, COUNT(v.id) AS n FROM products p LEFT JOIN variants v ON v.product_id = p.id GROUP BY p.id HAVING n = 0")
-    .all() as { slug: string }[]) {
+  for (const row of await all<{ slug: string }>(
+    "SELECT p.slug, COUNT(v.id) AS n FROM products p LEFT JOIN variants v ON v.product_id = p.id GROUP BY p.id HAVING n = 0",
+  )) {
     problems.push(`Product "${row.slug}" has no variants.`);
   }
 
   // Denormalised ratings must match the reviews table.
-  for (const row of db
-    .prepare(`SELECT p.slug, p.rating, p.review_count,
-                (SELECT COUNT(*) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS expected
-              FROM products p`)
-    .all() as { slug: string; rating: number; review_count: number; expected: number }[]) {
+  for (const row of await all<{
+    slug: string;
+    rating: number;
+    review_count: number;
+    expected: number;
+  }>(
+    `SELECT p.slug, p.rating, p.review_count,
+              (SELECT COUNT(*) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS expected
+       FROM products p`,
+  )) {
     if (row.review_count !== row.expected) {
       problems.push(`Product "${row.slug}" review_count ${row.review_count} != ${row.expected}.`);
     }
   }
 
-  const missingImages = (db
-    .prepare("SELECT slug FROM products WHERE images = '[]' OR images = ''")
-    .all() as { slug: string }[]).map((r) => r.slug);
+  const missingImages = (
+    await all<{ slug: string }>("SELECT slug FROM products WHERE images = '[]' OR images = ''")
+  ).map((r) => r.slug);
   for (const slug of missingImages) problems.push(`Product "${slug}" has no images.`);
 
   return problems;

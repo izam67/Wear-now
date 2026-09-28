@@ -1,165 +1,171 @@
-import { DatabaseSync } from "node:sqlite";
+import { createClient, type Client, type InValue } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { SCHEMA } from "./schema";
 
 /**
- * SQLite via Node's built-in `node:sqlite` — no native modules to compile.
+ * Database access, backed by libSQL.
  *
- * The connection is cached on `globalThis` so Next's dev-mode module reloading
- * doesn't open a new handle on every request.
+ * One code path serves both environments:
+ *
+ *   - Local dev  — `file:./data/wearnow.db`, an embedded database, so there is
+ *     no server to run and the seed script stays fast.
+ *   - Deployed   — a `libsql://` URL (Turso's free tier is enough for this),
+ *     because serverless hosts have an ephemeral, read-only filesystem and a
+ *     local file would vanish between requests.
+ *
+ * The driver is chosen entirely by `DATABASE_URL`, so the code exercised by
+ * the test scripts is the same code that runs in production.
+ *
+ * Everything here is async. libSQL talks to a remote database over HTTP, and
+ * a synchronous facade would only be honest for the local case.
  */
 
 export type Row = Record<string, unknown>;
 
-const DB_PATH =
-  process.env.DATABASE_PATH ?? path.join(process.cwd(), "data", "wearnow.db");
+/** Values libSQL will accept as a bound parameter. */
+export type Param = string | number | bigint | null | Uint8Array;
+
+const DB_URL =
+  process.env.DATABASE_URL?.trim() || `file:${path.join(process.cwd(), "data", "wearnow.db")}`;
+
+const isLocalFile = DB_URL.startsWith("file:");
 
 declare global {
-  var __wearNowDb: DatabaseSync | undefined;
+  var __wearNowClient: Client | undefined;
 }
 
-function open(): DatabaseSync {
-  if (DB_PATH !== ":memory:") {
-    mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  }
-  const database = new DatabaseSync(DB_PATH);
-
-  // busy_timeout has to come first: every statement below needs to be willing
-  // to wait for a lock, and a pragma that ignores the timeout will throw
-  // immediately instead.
-  database.exec("PRAGMA busy_timeout = 10000");
-
-  // journal_mode is a persistent property of the *file*, so once it is WAL
-  // every later process reading this pragma still takes a brief exclusive
-  // lock. `next build` opens the database from several workers at once, which
-  // makes the re-assert race, and losing that race is harmless: the mode is
-  // already correct. Verify rather than set, and tolerate a lock.
-  try {
-    const mode = database
-      .prepare("PRAGMA journal_mode")
-      .get() as { journal_mode?: string } | undefined;
-    if (String(mode?.journal_mode).toLowerCase() !== "wal") {
-      database.exec("PRAGMA journal_mode = WAL");
-    }
-  } catch {
-    // Another process is mid-switch. WAL is a performance setting, so defer to
-    // whatever the winning writer chose.
-  }
-
-  database.exec("PRAGMA foreign_keys = ON");
-  database.exec("PRAGMA synchronous = NORMAL");
-
-  // `CREATE TABLE IF NOT EXISTS` is idempotent but still write-locks. Keep the
-  // whole schema in one transaction so concurrent workers either see a fully
-  // migrated database or do no work at all.
-  try {
-    database.exec("BEGIN IMMEDIATE");
-    database.exec(SCHEMA);
-    database.exec("COMMIT");
-  } catch (error) {
-    try {
-      database.exec("ROLLBACK");
-    } catch {
-      // No active transaction to unwind.
-    }
-    throw error;
-  }
-
-  return database;
+function localPathFromUrl(url: string): string {
+  const filePath = url.replace(/^file:(\/\/)?/, "");
+  return path.isAbsolute(filePath)
+    ? filePath
+    : path.join(/* turbopackIgnore: true */ process.cwd(), filePath);
 }
 
-export function getDb(): DatabaseSync {
-  if (!globalThis.__wearNowDb) {
-    globalThis.__wearNowDb = open();
+function create(): Client {
+  const client = createClient({
+    url: DB_URL,
+    // Only meaningful for a remote database; libSQL rejects it on `file:`.
+    ...(isLocalFile ? {} : { authToken: process.env.DATABASE_AUTH_TOKEN }),
+  });
+
+  if (isLocalFile) {
+    const filePath = localPathFromUrl(DB_URL);
+    mkdirSync(path.dirname(filePath), { recursive: true });
   }
-  return globalThis.__wearNowDb;
+
+  return client;
 }
 
-export function getDatabasePath() {
-  return DB_PATH;
+export function getClient(): Client {
+  if (!globalThis.__wearNowClient) {
+    globalThis.__wearNowClient = create();
+  }
+  return globalThis.__wearNowClient;
+}
+
+/** Points at the local file, or redacts credentials for a remote URL. */
+export function getDatabaseTarget(): string {
+  if (isLocalFile) return localPathFromUrl(DB_URL);
+  const url = new URL(DB_URL);
+  return `${url.protocol}//${url.hostname}${url.pathname}`;
+}
+
+export function isRemoteDatabase(): boolean {
+  return !isLocalFile;
 }
 
 /* ------------------------------------------------------------------ *
- * Query helpers
+ * Parameter and row coercion
  *
- * `node:sqlite` returns null-prototype objects and rejects `undefined` /
- * booleans as bound values, so every result is normalised to a plain object
- * and every parameter is coerced to a supported primitive.
+ * `undefined` and booleans are not valid bind values, and libSQL hands back
+ * BigInt for INTEGER columns on some paths. Everything crossing this boundary
+ * is normalised so callers can pass ordinary JavaScript.
  * ------------------------------------------------------------------ */
 
-export type Param = string | number | null | bigint | Uint8Array;
-
-function coerce(value: unknown): Param {
+function coerce(value: unknown): InValue {
   if (value === undefined || value === null) return null;
   if (typeof value === "boolean") return value ? 1 : 0;
   if (value instanceof Date) return value.toISOString();
-  if (typeof value === "number" || typeof value === "bigint" || typeof value === "string") {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
     return value;
   }
-  if (value instanceof Uint8Array) return value;
+  if (typeof value === "bigint") return value;
+  if (typeof value === "string") return value;
   return String(value);
 }
 
 function toPlain<T>(row: unknown): T {
-  return { ...(row as object) } as T;
+  const source = row as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    out[key] = typeof value === "bigint" ? Number(value) : value;
+  }
+  return out as T;
 }
 
+/* ------------------------------------------------------------------ *
+ * Query helpers
+ * ------------------------------------------------------------------ */
+
 /** Runs a SELECT and returns all rows. */
-export function all<T = Row>(sql: string, ...params: unknown[]): T[] {
-  const stmt = getDb().prepare(sql);
-  return stmt.all(...params.map(coerce)).map((r) => toPlain<T>(r));
+export async function all<T = Row>(sql: string, ...params: unknown[]): Promise<T[]> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql, args: params.map(coerce) as InValue[] });
+  return result.rows.map((row) => toPlain<T>(row));
 }
 
 /** Runs a SELECT and returns the first row, or null. */
-export function get<T = Row>(sql: string, ...params: unknown[]): T | null {
-  const stmt = getDb().prepare(sql);
-  const row = stmt.get(...params.map(coerce));
-  return row === undefined ? null : toPlain<T>(row);
+export async function get<T = Row>(sql: string, ...params: unknown[]): Promise<T | null> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql, args: params.map(coerce) as InValue[] });
+  return result.rows.length ? toPlain<T>(result.rows[0]) : null;
 }
 
 /** Runs an INSERT/UPDATE/DELETE. Returns affected rows + last insert id. */
-export function run(sql: string, ...params: unknown[]): { changes: number; lastInsertRowid: number } {
-  const stmt = getDb().prepare(sql);
-  const result = stmt.run(...params.map(coerce));
+export async function run(
+  sql: string,
+  ...params: unknown[]
+): Promise<{ changes: number; lastInsertRowid: number }> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql, args: params.map(coerce) as InValue[] });
   return {
-    changes: Number(result.changes ?? 0),
+    changes: Number(result.rowsAffected ?? 0),
     lastInsertRowid: Number(result.lastInsertRowid ?? 0),
   };
 }
 
 /** Scalar helper for `SELECT COUNT(*)` style queries. */
-export function scalar<T = number>(sql: string, ...params: unknown[]): T | null {
-  const row = get<Row>(sql, ...params);
+export async function scalar<T = number>(sql: string, ...params: unknown[]): Promise<T | null> {
+  const row = await get<Row>(sql, ...params);
   if (!row) return null;
   const first = Object.values(row)[0];
   return (first as T) ?? null;
 }
 
 /**
- * Wraps a unit of work in a transaction. Nested calls reuse the outer
- * transaction so composed helpers stay atomic without double-BEGIN errors.
+ * Runs several statements atomically.
+ *
+ * This is the replacement for an interactive transaction. libSQL over HTTP has
+ * no way to hold a transaction open across `await` boundaries, but `batch` is
+ * applied as a single unit — either every statement lands or none does — which
+ * is the guarantee order placement actually needs.
  */
-let txDepth = 0;
-export function transaction<T>(fn: () => T): T {
-  const db = getDb();
-  if (txDepth > 0) return fn();
-  txDepth += 1;
-  db.exec("BEGIN");
-  try {
-    const result = fn();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* the transaction was already unwound */
-    }
-    throw error;
-  } finally {
-    txDepth -= 1;
-  }
+export async function batch(
+  statements: { sql: string; args?: unknown[] }[],
+): Promise<{ changes: number; lastInsertRowid: number }[]> {
+  if (statements.length === 0) return [];
+  await ensureSchema();
+  const result = await getClient().batch(
+    statements.map((s) => ({ sql: s.sql, args: (s.args ?? []).map(coerce) as InValue[] })),
+    "write",
+  );
+  return result.map((r) => ({
+    changes: Number(r.rowsAffected ?? 0),
+    lastInsertRowid: Number(r.lastInsertRowid ?? 0),
+  }));
 }
 
 /** Parses a JSON column, tolerating legacy or malformed values. */
@@ -170,4 +176,71 @@ export function parseJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Schema
+ *
+ * `CREATE TABLE IF NOT EXISTS` is idempotent, so this doubles as the migration.
+ * It is applied once per process, before any query is served, so a cold server
+ * cannot answer a request against a database that hasn't been migrated yet.
+ * ------------------------------------------------------------------ */
+
+let schemaPromise: Promise<void> | null = null;
+
+/**
+ * Local-only pragmas, applied once per process before the schema.
+ *
+ * A `next build` runs page-data collection in several worker processes that all
+ * open the same file and race each other's DDL. The default journal is rollback
+ * mode, under which a writer holds a lock that makes every other process fail
+ * with SQLITE_BUSY instead of waiting. WAL turns those concurrent touches into
+ * waits, and `busy_timeout` bounds how long each call blocks before it errors.
+ */
+let pragmasPromise: Promise<void> | null = null;
+
+function ensureLocalPragmas(): Promise<void> {
+  if (!isLocalFile) return Promise.resolve();
+  if (!pragmasPromise) {
+    pragmasPromise = (async () => {
+      const client = getClient();
+      await client.execute("PRAGMA journal_mode = WAL");
+      await client.execute("PRAGMA busy_timeout = 5000");
+      await client.execute("PRAGMA foreign_keys = ON");
+    })().catch((error) => {
+      pragmasPromise = null;
+      throw error;
+    });
+  }
+  return pragmasPromise;
+}
+
+/**
+ * Splits the schema into individual statements.
+ *
+ * The schema is DDL only — no triggers or `BEGIN...END` bodies, which would
+ * need a real parser — so splitting on `;` is sufficient once comments are
+ * stripped.
+ */
+function schemaStatements(): string[] {
+  return SCHEMA.replace(/--[^\n]*/g, "")
+    .split(";")
+    .map((sql) => sql.trim())
+    .filter(Boolean);
+}
+
+export function ensureSchema(): Promise<void> {
+  if (!schemaPromise) {
+    schemaPromise = ensureLocalPragmas()
+      .then(() =>
+        getClient().batch(schemaStatements().map((sql) => ({ sql })), "write"),
+      )
+      .then(() => undefined)
+      .catch((error) => {
+        // Let the next request retry rather than caching a permanent failure.
+        schemaPromise = null;
+        throw error;
+      });
+  }
+  return schemaPromise;
 }

@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     return fail("Enter a valid email address", 422);
   }
 
-  const result = subscribeToNewsletter(parsed.data.email);
+  const result = await subscribeToNewsletter(parsed.data.email);
   if (result.ok) clearRateLimit(rateLimitKey("newsletter", ip));
 
   return wantsJson

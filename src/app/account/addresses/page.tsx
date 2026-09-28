@@ -15,9 +15,9 @@ export default async function AddressesPage() {
   if (!user) redirect("/login?next=%2Faccount%2Faddresses");
 
   const [addresses, orders, saved] = [
-    listAddresses(user.id),
-    listOrdersForUser(user.id),
-    getWishlist(user.id),
+    await listAddresses(user.id),
+    await listOrdersForUser(user.id),
+    await getWishlist(user.id),
   ];
 
   return (

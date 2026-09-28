@@ -65,15 +65,15 @@ export function toUser(row: UserRow): User {
   };
 }
 
-export function findUserById(id: number): User | null {
-  const row = get<UserRow>(
+export async function findUserById(id: number): Promise<User | null> {
+  const row = await get<UserRow>(
     "SELECT id, email, first_name, last_name, role, created_at FROM users WHERE id = ?",
     id,
   );
   return row ? toUser(row) : null;
 }
 
-export function findUserByEmail(email: string) {
+export async function findUserByEmail(email: string) {
   return get<UserRow & { password_hash: string }>(
     "SELECT id, email, first_name, last_name, role, created_at, password_hash FROM users WHERE email = ?",
     email,
@@ -94,7 +94,7 @@ export async function requireUser(returnTo?: string): Promise<User> {
     const next = returnTo ? `?next=${encodeURIComponent(returnTo)}` : "";
     redirect(`/login${next}`);
   }
-  const user = findUserById(session.sub);
+  const user = await findUserById(session.sub);
   if (!user) redirect("/login");
   return user;
 }
@@ -117,7 +117,7 @@ export async function apiRequireAdmin(): Promise<
   if (!session) {
     return { error: jsonError("Authentication required", 401) };
   }
-  const user = findUserById(session.sub);
+  const user = await findUserById(session.sub);
   if (!user) {
     return { error: jsonError("Authentication required", 401) };
   }

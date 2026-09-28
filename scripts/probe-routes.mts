@@ -70,10 +70,10 @@ async function run(test: Case, cookie: string) {
   );
 }
 
-const user = get<{ id: number; email: string }>(
+const user = (await get<{ id: number; email: string }>(
   "SELECT id, email FROM users WHERE email = ?",
   "demo@wearnow.com",
-)!;
+))!;
 const token = createSessionToken({ sub: user.id, email: user.email, role: "customer" });
 const memberCookie = `${SESSION_COOKIE}=${token}`;
 

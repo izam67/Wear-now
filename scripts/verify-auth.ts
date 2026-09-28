@@ -1,5 +1,5 @@
 import { createSessionToken, verifyPassword, hashPassword } from "@/lib/auth";
-import { all, get } from "@/lib/db";
+import { get } from "@/lib/db";
 import { getWishlist, listOrdersForUser } from "@/lib/queries";
 
 /**
@@ -28,7 +28,7 @@ const cases: [string, string][] = [
 ];
 
 for (const [email, password] of cases) {
-  const user = get<UserRow>("SELECT id, email, role, password_hash FROM users WHERE email = ?", email);
+  const user = await get<UserRow>("SELECT id, email, role, password_hash FROM users WHERE email = ?", email);
   const ok = user ? verifyPassword(password, user.password_hash) : false;
   console.log(`${email.padEnd(26)} ${password.padEnd(16)} -> ${ok ? "OK" : "REJECTED"}`);
 }
@@ -39,11 +39,12 @@ console.log("empty password        ->", verifyPassword("", hashPassword("somethi
 console.log("unicode-normalised    ->", verifyPassword("café", hashPassword("café")) ? "OK" : "REJECTED");
 
 console.log("--- demo account ---");
-const demo = get<UserRow>("SELECT id, email, role, password_hash FROM users WHERE email = ?", "demo@wearnow.com")!;
+const demo = await get<UserRow>("SELECT id, email, role, password_hash FROM users WHERE email = ?", "demo@wearnow.com");
+if (!demo) throw new Error("demo user missing — run `npm run db:reset` first");
 console.log("role                  :", demo.role);
-console.log("orders                :", listOrdersForUser(demo.id).length);
-console.log("wishlist              :", getWishlist(demo.id).length);
-console.log("users in db           :", all<{ n: number }>("SELECT COUNT(*) AS n FROM users")[0]?.n);
+console.log("orders                :", (await listOrdersForUser(demo.id)).length);
+console.log("wishlist              :", (await getWishlist(demo.id)).length);
+console.log("users in db           :", (await get<{ n: number }>("SELECT COUNT(*) AS n FROM users"))?.n);
 
 const role = demo.role === "admin" ? "admin" : "customer";
 console.log("TOKEN:" + createSessionToken({ sub: demo.id, email: demo.email, role }));

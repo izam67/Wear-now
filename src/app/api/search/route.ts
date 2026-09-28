@@ -24,7 +24,7 @@ export async function GET(request: Request) {
   // Keeps the route dynamic and lets personalisation hook in here later.
   void (await currentUser());
 
-  const result = queryProducts({ q: raw, perPage: PRODUCT_LIMIT });
+  const result = await queryProducts({ q: raw, perPage: PRODUCT_LIMIT });
   const needle = normalize(raw);
 
   const categories = result.facets.categories

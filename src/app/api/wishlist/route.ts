@@ -14,7 +14,7 @@ const toggleSchema = z.object({ productId: z.number().int().positive() });
 export async function GET() {
   const user = await currentUser();
   if (!user) return jsonError("Sign in to sync your wishlist", 401);
-  return NextResponse.json({ wishlist: getWishlistProductIds(user.id) });
+  return NextResponse.json({ wishlist: await getWishlistProductIds(user.id) });
 }
 
 export async function POST(request: Request) {
@@ -24,12 +24,12 @@ export async function POST(request: Request) {
   const parsed = toggleSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return jsonError("Invalid product", 422);
 
-  const product = getProductById(parsed.data.productId);
+  const product = await getProductById(parsed.data.productId);
   if (!product) return jsonError("That piece is no longer available", 404);
 
-  const { inWishlist } = toggleWishlistItem(user.id, product.id);
+  const { inWishlist } = await toggleWishlistItem(user.id, product.id);
   return NextResponse.json({
     inWishlist,
-    wishlist: getWishlistProductIds(user.id),
+    wishlist: await getWishlistProductIds(user.id),
   });
 }

@@ -41,7 +41,7 @@ async function guard() {
 export async function GET() {
   const auth = await guard();
   if ("error" in auth) return auth.error;
-  return NextResponse.json({ cart: getCart(auth.user.id) });
+  return NextResponse.json({ cart: await getCart(auth.user.id) });
 }
 
 export async function POST(request: Request) {
@@ -53,10 +53,10 @@ export async function POST(request: Request) {
     return jsonError("Invalid cart item", 422, { issues: parsed.error.issues });
   }
 
-  const result = addToCart(auth.user.id, parsed.data.variantId, parsed.data.quantity);
+  const result = await addToCart(auth.user.id, parsed.data.variantId, parsed.data.quantity);
   if ("error" in result) return jsonError(result.error, 409);
 
-  return NextResponse.json({ cart: getCart(auth.user.id) });
+  return NextResponse.json({ cart: await getCart(auth.user.id) });
 }
 
 export async function PATCH(request: Request) {
@@ -68,9 +68,9 @@ export async function PATCH(request: Request) {
 
   // Quantity is clamped to available stock server-side; a zero quantity
   // removes the line. The client reconciles against the returned cart.
-  updateCartQuantity(auth.user.id, parsed.data.lineId, parsed.data.quantity);
+  await updateCartQuantity(auth.user.id, parsed.data.lineId, parsed.data.quantity);
 
-  return NextResponse.json({ cart: getCart(auth.user.id) });
+  return NextResponse.json({ cart: await getCart(auth.user.id) });
 }
 
 export async function DELETE(request: Request) {
@@ -81,10 +81,10 @@ export async function DELETE(request: Request) {
   if (body && typeof body === "object" && "lineId" in body) {
     const parsed = removeSchema.safeParse(body);
     if (!parsed.success) return jsonError("Invalid line", 422);
-    removeCartLine(auth.user.id, parsed.data.lineId);
+    await removeCartLine(auth.user.id, parsed.data.lineId);
   } else {
-    clearCart(auth.user.id);
+    await clearCart(auth.user.id);
   }
 
-  return NextResponse.json({ cart: getCart(auth.user.id) });
+  return NextResponse.json({ cart: await getCart(auth.user.id) });
 }

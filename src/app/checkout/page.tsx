@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 export default async function CheckoutPage() {
   const user = await requireUser("/checkout");
 
-  const lines = getCart(user.id);
-  const addresses = listAddresses(user.id);
+  const lines = await getCart(user.id);
+  const addresses = await listAddresses(user.id);
 
   // An empty bag should land on the bag page, not an unusable summary.
   if (lines.length === 0) redirect("/cart");

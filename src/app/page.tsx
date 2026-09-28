@@ -22,13 +22,13 @@ export const metadata: Metadata = {
   alternates: { canonical: "/" },
 };
 
-export default function HomePage() {
-  const newArrivals = getNewArrivals(8);
-  const trending = getTrending(8);
-  const bestSellers = getBestSellers(4);
-  const categories = listCategories();
-  const reviews = getHomepageReviews(6);
-  const inspiration = listInspiration().slice(0, 6);
+export default async function HomePage() {
+  const newArrivals = await getNewArrivals(8);
+  const trending = await getTrending(8);
+  const bestSellers = await getBestSellers(4);
+  const categories = await listCategories();
+  const reviews = await getHomepageReviews(6);
+  const inspiration = (await listInspiration()).slice(0, 6);
 
   return (
     <>

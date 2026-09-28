@@ -55,7 +55,7 @@ export async function createAddress(
   }
 
   const d = parsed.data;
-  saveAddress(userId, {
+  await saveAddress(userId, {
     label: d.label,
     firstName: d.firstName,
     lastName: d.lastName,
@@ -73,6 +73,6 @@ export async function createAddress(
 }
 
 export async function removeAddress(userId: number, id: number): Promise<void> {
-  deleteAddress(userId, id);
+  await deleteAddress(userId, id);
   revalidatePath("/account/addresses");
 }

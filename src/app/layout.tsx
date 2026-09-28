@@ -81,8 +81,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <SiteShell
           signedIn={!!user}
-          serverCart={user ? getCart(user.id) : []}
-          serverWishlist={user ? getWishlist(user.id) : []}
+          serverCart={user ? await getCart(user.id) : []}
+          serverWishlist={user ? await getWishlist(user.id) : []}
         >
           {children}
         </SiteShell>

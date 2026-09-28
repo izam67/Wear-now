@@ -82,7 +82,7 @@ export async function placeOrder(
   }
 
   const d = parsed.data;
-  const lines = getCart(userId);
+  const lines = await getCart(userId);
 
   // Re-read the bag server-side. Never trust totals, stock, or prices that
   // travelled through the browser.
@@ -90,7 +90,7 @@ export async function placeOrder(
     return { error: "Your bag is empty." };
   }
 
-  const totals: CartTotals = calculateTotals(
+  const totals: CartTotals = await calculateTotals(
     lines,
     { discountCode: d.discountCode, shippingMethod: d.shippingMethod },
   );
@@ -113,7 +113,7 @@ export async function placeOrder(
   // createOrder runs as one transaction: it writes the order and its lines,
   // decrements variant stock, bumps discount usage and empties the bag. If any
   // of that fails, none of it sticks.
-  const orderId = createOrder({
+  const orderId = await createOrder({
     orderNumber,
     userId,
     email: d.email,
@@ -155,7 +155,7 @@ export async function placeOrder(
   });
 
   if (d.saveAddress === "on") {
-    saveAddress(userId, {
+    await saveAddress(userId, {
       label: "Shipping",
       firstName: d.firstName,
       lastName: d.lastName,

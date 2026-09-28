@@ -14,8 +14,8 @@ export default async function OrdersPage() {
   const user = await currentUser();
   if (!user) redirect("/login?next=%2Faccount%2Forders");
 
-  const orders = listOrdersForUser(user.id);
-  const saved = getWishlist(user.id);
+  const orders = await listOrdersForUser(user.id);
+  const saved = await getWishlist(user.id);
 
   return (
     <div className="container-page py-12 lg:py-20">

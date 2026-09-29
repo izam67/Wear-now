@@ -598,6 +598,22 @@ export async function getWishlistProductIds(userId: number):Promise<number[]> {
   );
 }
 
+/**
+ * Idempotently adds products to an account's wishlist — used by the
+ * merge-on-sign-in path, where a guest's local list is pushed up once and
+ * `UNIQUE (user_id, product_id)` guarantees a repeat run changes nothing.
+ */
+export async function addWishlistProducts(userId: number, productIds: number[]): Promise<void> {
+  const ids = [...new Set(productIds)];
+  if (ids.length === 0) return;
+  await batch(
+    ids.map((productId) => ({
+      sql: "INSERT OR IGNORE INTO wishlist_items (user_id, product_id) VALUES (?, ?)",
+      args: [userId, productId],
+    })),
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Cart
  * ------------------------------------------------------------------ */

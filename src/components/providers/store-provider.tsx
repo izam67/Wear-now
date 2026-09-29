@@ -17,6 +17,7 @@ import {
   getServerSnapshot,
   getSnapshot,
   guestCart,
+  guestWishlist,
   prefsStore,
   subscribe,
   viewedStore,
@@ -136,6 +137,14 @@ export function StoreProvider({
     // Snapshot the guest bag *before* adoption overwrites it — after this call
     // the orphan lines are gone, and merge-on-sign-in would find nothing.
     const orphan = signedIn ? guestCart() : [];
+    // Same for the wishlist: the account list replaces the local one, so the
+    // ids a guest starred must be captured now while they still exist. The
+    // server's snapshots win for any overlap.
+    const orphanSaved = signedIn ? guestWishlist() : [];
+    const savedSnapshots = new Map<number, WishlistItem>(
+      orphanSaved.map((p) => [p.id, p]),
+    );
+    for (const p of serverWishlist) savedSnapshots.set(p.id, p);
 
     adoptServerState(signedIn, serverCart, serverWishlist);
 
@@ -156,6 +165,27 @@ export function StoreProvider({
         })
         .catch(() => {
           /* keep the adopted cart */
+        });
+    }
+
+    // Push the guest's starred ids up once. The server responds with the
+    // merged order; combined snapshots cover every id on both sides.
+    if (orphanSaved.length > 0) {
+      void fetch("/api/wishlist", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: orphanSaved.map((p) => p.id) }),
+      })
+        .then((res) => (res.ok ? (res.json() as Promise<{ wishlist?: number[] }>) : null))
+        .then((data) => {
+          if (!data?.wishlist) return;
+          const merged = data.wishlist
+            .map((id) => savedSnapshots.get(id))
+            .filter((p): p is WishlistItem => !!p);
+          if (merged.length > 0) wishlistStore.replace(merged);
+        })
+        .catch(() => {
+          /* keep the adopted wishlist */
         });
     }
   }, [signedIn, serverCart, serverWishlist]);

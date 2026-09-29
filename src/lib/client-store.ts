@@ -281,3 +281,15 @@ export function adoptServerState(
 export function guestCart(): CartLine[] {
   return getSnapshot().lines;
 }
+
+/**
+ * The guest wishlist (full snapshots, in saved order) as it stood before
+ * adoption. Mirrors `guestCart` — the ids are pushed up to the account so a
+ * shopper doesn't lose products they starred before signing in.
+ */
+export function guestWishlist(): WishlistItem[] {
+  const current = getSnapshot();
+  return current.wishlist
+    .map((id) => current.wishlistItems[id])
+    .filter((p): p is WishlistItem => !!p);
+}

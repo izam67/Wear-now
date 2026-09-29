@@ -509,6 +509,16 @@ export async function getHomepageReviews(limit = 6):Promise<Review[]> {
   )).map(toReview);
 }
 
+/** Every approved review, newest first, for the /reviews archive page. */
+export async function listApprovedReviews(limit = 300):Promise<Review[]> {
+  return (await all<ReviewRow>(
+    `SELECT r.*, p.slug AS product_slug, p.name AS product_name
+     FROM reviews r JOIN products p ON p.id = r.product_id
+     WHERE r.status = 'approved' ORDER BY r.created_at DESC LIMIT ?`,
+    limit,
+  )).map(toReview);
+}
+
 export async function ratingBreakdown(productId: number) {
   const rows = await all<{ rating: number; count: number }>(
     "SELECT rating, COUNT(*) AS count FROM reviews WHERE product_id = ? AND status = 'approved' GROUP BY rating",

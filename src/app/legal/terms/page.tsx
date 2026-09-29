@@ -20,9 +20,9 @@ export default function TermsPage() {
     >
       <ProseSection heading="Orders & pricing">
         <p>
-          All prices are shown in USD, inclusive of tax where applicable. We make every
+          All prices are shown in Zambian Kwacha (ZMW), inclusive of tax where applicable. We make every
           effort to keep them accurate, but if a price is obviously wrong — a charging error
-          rather than a sale — we'll let you know before charging. You can cancel an order
+          rather than a sale — we will let you know before charging. You can cancel an order
           at any time before it ships.
         </p>
       </ProseSection>

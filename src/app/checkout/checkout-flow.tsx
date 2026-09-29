@@ -315,7 +315,7 @@ export function CheckoutFlow({
             </p>
           ) : (
             <p className="mt-2 text-[0.8125rem] text-mist">
-              Try <code className="rounded bg-sand px-1.5 py-0.5">WEARNOW10</code> on orders over $150.
+              Try <code className="rounded bg-sand px-1.5 py-0.5">WEARNOW10</code> on orders over K150.
             </p>
           )}
         </section>

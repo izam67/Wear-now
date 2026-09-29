@@ -349,7 +349,7 @@ export function ProductDetail({ product, variants }: { product: Product; variant
           <div className="mt-8 flex flex-col gap-3 rounded-xl border border-line bg-sand/50 p-5 text-[0.8125rem] text-graphite sm:flex-row sm:items-center sm:gap-8">
             <p className="flex items-center gap-2.5">
               <Truck size={17} className="shrink-0 text-stone" aria-hidden />
-              Free delivery over $150
+              Free delivery over K150
             </p>
             <p className="flex items-center gap-2.5">
               <RotateCcw size={17} className="shrink-0 text-stone" aria-hidden />
@@ -402,7 +402,7 @@ export function ProductDetail({ product, variants }: { product: Product; variant
             <Detail heading="Shipping & returns">
               <p className="max-w-2xl text-[0.875rem] leading-relaxed text-stone">
                 Standard delivery takes 4–6 business days and is free on orders over
-                $150. Express and next-day options are available at checkout. Unworn
+                K150. Express and next-day options are available at checkout. Unworn
                 pieces can be returned within 30 days for a full refund.
               </p>
             </Detail>

@@ -71,7 +71,7 @@ export const SOCIALS = [
  * ------------------------------------------------------------------ */
 
 export const ANNOUNCEMENTS = [
-  "Complimentary delivery on orders over $150",
+  "Complimentary delivery on orders over K150",
   "New season drop — up to 40% off selected pieces",
   "Free 30-day returns, no questions asked",
   "Members get first access to every new release",
@@ -87,9 +87,9 @@ export const STORE = {
   description:
     "A considered edit of clothing, shoes, jewelry, bags and accessories — chosen for the way they feel, the way they last, and the way they make an outfit feel finished.",
   email: "hello@wearnow.com",
-  phone: "+1 (212) 555-0184",
-  address: "48 Mercer Street, SoHo, New York, NY 10013",
-  currency: "USD",
+  phone: "+260977590677",
+  address: "Studio Lusaka, Zambia",
+  currency: "ZMW",
   freeShippingThreshold: 15000,
   taxRate: 0.08,
 } as const;
@@ -101,7 +101,7 @@ export const SHIPPING_METHODS = [
     description: "4–6 business days",
     price: 0,
     threshold: 15000,
-    thresholdNote: "Free over $150",
+    thresholdNote: "Free over K150",
   },
   {
     id: "express",

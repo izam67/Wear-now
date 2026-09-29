@@ -64,14 +64,14 @@ export default function CareersPage() {
 
       <ProseSection heading="Don't see your role?">
         <p>
-          We're always glad to talk to exceptional people. Write to{" "}
+          We are always glad to talk to exceptional people. Write to{" "}
           <a
             href={`mailto:${STORE.email}`}
             className="font-medium text-ink underline underline-offset-4 transition-colors hover:text-clay"
           >
             {STORE.email}
           </a>{" "}
-          with a few lines about yourself and what you'd want to build here.
+          with a few lines about yourself and what you would want to build here.
         </p>
       </ProseSection>
     </StaticPage>

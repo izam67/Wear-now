@@ -60,7 +60,7 @@ export default function ShippingPage() {
 
       <ProseSection heading="Tracking your order">
         <p>
-          You'll get a confirmation the moment your order ships, with a tracking link for
+          You will get a confirmation the moment your order ships, with a tracking link for
           standard and express parcels. Missed a delivery? The carrier will hold your parcel
           for five business days before returning it.
         </p>

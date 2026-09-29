@@ -92,7 +92,7 @@ export default async function HomePage() {
         <ul className="grid gap-8 border-t border-line pt-12 sm:grid-cols-2 lg:grid-cols-4">
           {[
             {
-              title: "Free delivery over $150",
+              title: "Free delivery over K150",
               body: "Complimentary standard shipping, and returns on everything for 30 days.",
               href: "/help/shipping",
             },

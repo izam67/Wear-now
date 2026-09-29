@@ -24,7 +24,7 @@ export default function AboutPage() {
         <p>
           Every piece in the collection passes a short test before it earns a place: does it
           feel good on, does it wear well, and does it make the rest of an outfit look better?
-          If it can't answer all three, it doesn't get the space.
+          If it cannot answer all three, it does not get the space.
         </p>
         <p>
           That discipline keeps the catalog small enough to know personally — every product,

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { ProseList, ProseSection, StaticPage } from "@/components/content/static-page";
 import { STORE } from "@/lib/constants";
 
@@ -37,9 +38,9 @@ export default function ReturnsPage() {
       <ProseSection heading="How to start a return">
         <p>
           Return labels are available under your order in{" "}
-          <a href="/account/orders" className="underline underline-offset-4 hover:text-ink">
+          <Link href="/account/orders" className="underline underline-offset-4 hover:text-ink">
             your account
-          </a>
+          </Link>
           . Drop the parcel at any post office or arrange a courier pickup — most carriers can
           collect from your door the next business day.
         </p>

@@ -14,7 +14,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: "How long does delivery take?",
-    a: "Standard delivery is 4–6 business days and free over $150. Express takes 2–3 business days, and next-day courier gets your order there tomorrow if you order before 2pm.",
+    a: "Standard delivery is 4–6 business days and free over K150. Express takes 2–3 business days, and next-day courier gets your order there tomorrow if you order before 2pm.",
   },
   {
     q: "What is your returns policy?",

@@ -433,10 +433,10 @@ export async function seed(force = false): Promise<SeedResult> {
   /* ---- Discounts ---- */
   const discounts = [
     { code: "WELCOME10", description: "10% off your first order", type: "percent", value: 10, min: 5000, max: 5000, days: 365 },
-    { code: "ATELIER20", description: "20% off orders over $300", type: "percent", value: 20, min: 30000, max: 15000, days: 90 },
-  { code: "WEARNOW10", description: "10% off orders over $150", type: "percent", value: 10, min: 15000, max: 8000, days: 365 },
+    { code: "ATELIER20", description: "20% off orders over K300", type: "percent", value: 20, min: 30000, max: 15000, days: 90 },
+  { code: "WEARNOW10", description: "10% off orders over K150", type: "percent", value: 10, min: 15000, max: 8000, days: 365 },
     { code: "FREESHIP", description: "Free express shipping, any order", type: "free_shipping", value: 0, min: 0, max: null, days: 180 },
-    { code: "TAKE25", description: "$25 off orders over $200", type: "fixed", value: 2500, min: 20000, max: null, days: 60 },
+    { code: "TAKE25", description: "K25 off orders over K200", type: "fixed", value: 2500, min: 20000, max: null, days: 60 },
   ] as const;
 
   await runBatch(

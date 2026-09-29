@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { STORE } from "@/lib/constants";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -9,7 +10,7 @@ export function cn(...inputs: ClassValue[]) {
  * Money — every amount in the system is stored as an integer of cents.
  * ------------------------------------------------------------------ */
 
-export function formatMoney(cents: number, currency = "USD", locale = "en-US") {
+export function formatMoney(cents: number, currency = STORE.currency, locale = "en-ZM") {
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,

@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Mail, MapPin, Phone } from "lucide-react";
 import { StaticPage } from "@/components/content/static-page";
 import { STORE } from "@/lib/constants";
 
 export const metadata: Metadata = {
   title: `Contact Us — ${STORE.name}`,
-  description: `How to reach ${STORE.name} support — email, phone and our New York studio.`,
+  description: `How to reach ${STORE.name} support — email, phone and our Lusaka studio.`,
 };
 
 export default function ContactPage() {
@@ -47,9 +48,9 @@ export default function ContactPage() {
         <p className="font-medium text-ink">Before you write in</p>
         <p className="mt-2">
           Order status, shipping times and returns are covered on the{" "}
-          <a href="/account/orders" className="underline underline-offset-4 hover:text-ink">
+          <Link href="/account/orders" className="underline underline-offset-4 hover:text-ink">
             order tracking
-          </a>{" "}
+          </Link>{" "}
           page and in our{" "}
           <a href="/help/faq" className="underline underline-offset-4 hover:text-ink">
             FAQ

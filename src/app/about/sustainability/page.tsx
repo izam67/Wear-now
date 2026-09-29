@@ -29,7 +29,7 @@ export default function SustainabilityPage() {
 
       <ProseSection heading="Durability as a feature">
         <p>
-          Reinforced seams where they matter, lining where it shows, hardware that won't
+          Reinforced seams where they matter, lining where it shows, hardware that will not
           tarnish in a season. Nothing here is designed for a single photo shoot.
         </p>
       </ProseSection>

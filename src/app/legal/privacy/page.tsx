@@ -56,7 +56,7 @@ export default function PrivacyPage() {
           >
             {STORE.email}
           </a>
-          . We'll confirm within 30 days. Cookies are limited to what's needed to keep you
+          . We will confirm within 30 days. Cookies are limited to what is needed to keep you
           signed in and remember your bag.
         </p>
       </ProseSection>

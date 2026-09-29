@@ -15,7 +15,7 @@ import type {
   Variant,
 } from "./types";
 import { PRODUCTS_PER_PAGE, shippingFor, STORE } from "./constants";
-import { normalize } from "./utils";
+import { normalize, formatMoney } from "./utils";
 
 /* ------------------------------------------------------------------ *
  * Row → domain mapping
@@ -786,8 +786,7 @@ export async function calculateTotals(
     if (!found || expired || exhausted) {
       discountError = "That code isn't valid on this order.";
     } else if (subtotal < found.min_subtotal) {
-      const shortBy = ((found.min_subtotal - subtotal) / 100).toFixed(2);
-      discountError = `Spend $${shortBy} more to use this code.`;
+      discountError = `Spend ${formatMoney(found.min_subtotal - subtotal)} more to use this code.`;
     } else {
       appliedCode = found.code;
       if (found.type === "percent") {

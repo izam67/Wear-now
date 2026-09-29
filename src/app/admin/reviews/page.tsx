@@ -5,7 +5,7 @@ import { listAllReviews } from "@/lib/queries";
 import { moderate } from "@/app/actions/admin";
 import { AdminShell, Panel } from "@/components/admin/admin-shell";
 import { IMG } from "@/lib/images";
-import { formatDateTime, initials, pluralize } from "@/lib/utils";
+import { formatDateTime, pluralize } from "@/lib/utils";
 import { Stars } from "@/components/ui/stars";
 
 export const metadata: Metadata = {
